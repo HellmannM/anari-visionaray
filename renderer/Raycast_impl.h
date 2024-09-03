@@ -2,6 +2,7 @@
 
 #include "renderer/common.h"
 #include "renderer/VolumeIntegration.h"
+#include "renderer/VolumeIntegrationDRR.h"
 
 namespace visionaray {
 

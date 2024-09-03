@@ -23,6 +23,7 @@ struct VisionarayRenderer
                    const VisionarayGlobalState::DeviceObjectRegistry &DD,
                    unsigned worldID, int frameID)
   {
+    auto start = std::chrono::system_clock::now();
     if (type == Raycast) {
       asRaycast.renderer.renderFrame(
           frame, cam, size, state, DD, rendererState, worldID, frameID);
@@ -30,6 +31,10 @@ struct VisionarayRenderer
       asDirectLight.renderer.renderFrame(
           frame, cam, size, state, DD, rendererState, worldID, frameID);
     }
+    auto time = std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::system_clock::now() - start).count();
+    //std::cout << "elapsed: " << time << "ms" << std::endl;
+    std::cout << ", " << time << "ms" << std::flush;
   }
 
   VSNRAY_FUNC
