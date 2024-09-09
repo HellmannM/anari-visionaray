@@ -112,7 +112,7 @@ void TransferFunction1D::commit()
   vvol.asTransferFunction1D.numValues = tex.size()[0];
   vvol.asTransferFunction1D.valueRange = m_valueRange;
 #ifdef WITH_CUDA
-  transFuncTexture.reset(tex);
+  transFuncTexture = cuda_texture<float4, 1>(tex);
   vvol.asTransferFunction1D.sampler = cuda_texture_ref<float4, 1>(transFuncTexture);
 #elif defined(WITH_HIP)
   transFuncTexture = hip_texture<float4, 1>(tex);
