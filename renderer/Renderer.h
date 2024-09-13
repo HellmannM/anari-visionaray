@@ -8,12 +8,13 @@
 // impls
 #include "Raycast_impl.h"
 #include "DirectLight_impl.h"
+#include "DRR_impl.h"
 
 namespace visionaray {
 
 struct VisionarayRenderer
 {
-  enum Type { Raycast, DirectLight, };
+  enum Type { Raycast, DirectLight, DRR };
   Type type;
 
   void renderFrame(const dco::Frame &frame,
@@ -29,6 +30,9 @@ struct VisionarayRenderer
     } else if (type == DirectLight) {
       asDirectLight.renderer.renderFrame(
           frame, cam, size, state, DD, rendererState, worldID, frameID);
+    } else if (type == DRR) {
+      asDRR.renderer.renderFrame(
+          frame, cam, size, state, DD, rendererState, worldID, frameID);
     }
   }
 
@@ -38,6 +42,8 @@ struct VisionarayRenderer
       return asRaycast.renderer.stochasticRendering;
     } else if (type == DirectLight) {
       return asDirectLight.renderer.stochasticRendering;
+    } else if (type == DRR) {
+      return asDRR.renderer.stochasticRendering;
     }
     return type != Raycast;
   }
@@ -54,6 +60,10 @@ struct VisionarayRenderer
   struct {
     VisionarayRendererDirectLight renderer;
   } asDirectLight;
+
+  struct {
+    VisionarayRendererDRR renderer;
+  } asDRR;
 
   RendererState rendererState;
 };

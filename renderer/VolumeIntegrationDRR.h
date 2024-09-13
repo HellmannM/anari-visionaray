@@ -56,6 +56,7 @@ inline float rayMarchVolumeDRR(ScreenSample &ss,
   }
   auto lac_averaged = lac_accumulated / steps;
   auto dist_cm = (steps * dt / dt_scale) / 10.f; //TODO assuming dt is in [mm]
+  dist_cm /= 50.f;
   auto remaining = pow(photon_energy, -dist_cm * lac_averaged);
   color = float3(1.f - remaining);
   alpha = 1.f;
@@ -78,6 +79,7 @@ inline float rayMarchVolumeDRR(ScreenSample &ss,
   }
   auto section_lac_averaged = section_lac_accumulated / section_steps;
   auto section_dist_cm = (section_steps * dt / dt_scale) / 10.f; //TODO assuming dt is in [mm]
+  section_dist_cm /= 50.f;
   auto section_remaining = pow(photon_energy, -section_dist_cm * section_lac_averaged);
   auto contribution = (1.f - section_remaining) / (1.f - remaining);
   if (contribution >= min_contribution)

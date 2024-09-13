@@ -1,6 +1,6 @@
 
 #include "for_each.h"
-#include "Raycast_impl.h"
+#include "DRR_impl.h"
 
 namespace visionaray {
 
@@ -162,13 +162,14 @@ inline PixelSample renderSample(ScreenSample &ss, Ray ray, unsigned worldID,
     float3 color(0.f);
     float alpha = 0.f;
 
-    rayMarchVolume(ss, ray, vol, color, alpha);
+    result.depth = rayMarchVolumeDRR(ss, ray, vol, color, alpha);
     result.color = over(float4(color,alpha), result.color);
     result.Ng = float3{}; // TODO: gradient
     result.Ns = float3{}; // TODO..
     result.albedo = float3{}; // TODO..
     result.objId = group.objIds[hrv.volID];
     result.instId = inst.userID;
+    auto point = ray.ori + result.depth * ray.dir; //TODO store this point instead of depth
 
     hit = true;
   }
@@ -180,7 +181,7 @@ inline PixelSample renderSample(ScreenSample &ss, Ray ray, unsigned worldID,
   return result;
 }
 
-void VisionarayRendererRaycast::renderFrame(const dco::Frame &frame,
+void VisionarayRendererDRR::renderFrame(const dco::Frame &frame,
                                             const dco::Camera &cam,
                                             uint2 size,
                                             VisionarayGlobalState *state,

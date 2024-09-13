@@ -1,11 +1,11 @@
 #pragma once
 
 #include "renderer/common.h"
-#include "renderer/VolumeIntegration.h"
+#include "renderer/VolumeIntegrationDRR.h"
 
 namespace visionaray {
 
-struct VisionarayRendererRaycast
+struct VisionarayRendererDRR
 {
   void renderFrame(const dco::Frame &frame,
                    const dco::Camera &cam,

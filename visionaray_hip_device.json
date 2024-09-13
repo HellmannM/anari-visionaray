@@ -236,6 +236,34 @@
           "description": "heat map scaling factor"
         }
       ]
+    },
+    {
+      "type": "ANARI_RENDERER",
+      "name": "drr",
+      "parameters": [
+        {
+          "name": "name",
+          "types": [
+            "ANARI_STRING"
+          ],
+          "tags": [],
+          "description": "optional object name"
+        },
+        {
+          "name": "background",
+          "types": [
+            "ANARI_FLOAT32_VEC4"
+          ],
+          "tags": [],
+          "default": [
+            1.0,
+            1.0,
+            1.0,
+            1.0
+          ],
+          "description": "background color and alpha (RGBA)"
+        }
+      ]
     }
   ]
 }

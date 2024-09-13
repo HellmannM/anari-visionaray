@@ -3,6 +3,7 @@
 
 #include "Raycast.h"
 #include "DirectLight.h"
+#include "DRR.h"
 #include "Renderer.h"
 
 namespace visionaray {
@@ -90,6 +91,8 @@ Renderer *Renderer::createInstance(std::string_view subtype, VisionarayGlobalSta
     return new DirectLight(s);
   else if (subtype == "raycast")
     return new Raycast(s);
+  else if (subtype == "drr")
+    return new DRR(s);
   else
     return {};
 }
