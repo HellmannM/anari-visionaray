@@ -18,7 +18,8 @@ inline PixelSample renderSample(ScreenSample &ss, Ray ray, unsigned worldID,
   if (hrv.hit) {
     const auto &inst = onDevice.instances[hrv.instID];
     const auto &group = onDevice.groups[inst.groupID];
-    const dco::Volume &vol = onDevice.volumes[group.volumes[hrv.volID]];
+    //const dco::Volume &vol = onDevice.volumes[group.volumes[hrv.volID]];
+    const dco::Volume &vol = onDevice.volumes[hrv.volID];
 
     float3 color(0.f);
     float alpha = 0.f;
