@@ -21,17 +21,17 @@ struct VisionarayRenderer
                    const dco::Camera &cam,
                    uint2 size,
                    VisionarayGlobalState *state,
-                   const VisionarayGlobalState::DeviceObjectRegistry &DD,
+                   const DeviceObjectRegistry &DD,
                    unsigned worldID, int frameID)
   {
     if (type == Raycast) {
-      asRaycast.renderer.renderFrame(
+      asRaycast.renderFrame(
           frame, cam, size, state, DD, rendererState, worldID, frameID);
     } else if (type == DirectLight) {
-      asDirectLight.renderer.renderFrame(
+      asDirectLight.renderFrame(
           frame, cam, size, state, DD, rendererState, worldID, frameID);
     } else if (type == DRR) {
-      asDRR.renderer.renderFrame(
+      asDRR.renderFrame(
           frame, cam, size, state, DD, rendererState, worldID, frameID);
     }
   }
@@ -39,11 +39,11 @@ struct VisionarayRenderer
   VSNRAY_FUNC
   constexpr bool stochasticRendering() const {
     if (type == Raycast) {
-      return asRaycast.renderer.stochasticRendering;
+      return asRaycast.stochasticRendering;
     } else if (type == DirectLight) {
-      return asDirectLight.renderer.stochasticRendering;
+      return asDirectLight.stochasticRendering;
     } else if (type == DRR) {
-      return asDRR.renderer.stochasticRendering;
+      return asDRR.stochasticRendering;
     }
     return type != Raycast;
   }
@@ -53,17 +53,11 @@ struct VisionarayRenderer
     return type == DirectLight && rendererState.taaEnabled;
   }
 
-  struct {
-    VisionarayRendererRaycast renderer;
-  } asRaycast;
-
-  struct {
-    VisionarayRendererDirectLight renderer;
-  } asDirectLight;
-
-  struct {
-    VisionarayRendererDRR renderer;
-  } asDRR;
+  union {
+    VisionarayRendererRaycast     asRaycast;
+    VisionarayRendererDirectLight asDirectLight;
+    VisionarayRendererDRR         asDRR;
+  };
 
   RendererState rendererState;
 };

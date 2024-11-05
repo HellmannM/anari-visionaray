@@ -14,11 +14,8 @@ SpatialField::SpatialField(VisionarayGlobalState *s)
     , m_gridAccel(s)
 {
   s->objectCounts.spatialFields++;
+  vfield = dco::createSpatialField();
   vfield.fieldID = deviceState()->dcos.spatialFields.alloc(vfield);
-  m_gridAccel.visionarayAccel().fieldID = vfield.fieldID;
-  m_gridAccel.visionarayAccel().dims = int3(0);
-  m_gridAccel.visionarayAccel().valueRanges = nullptr;
-  m_gridAccel.visionarayAccel().maxOpacities = nullptr;
 }
 
 SpatialField::~SpatialField()
@@ -57,14 +54,9 @@ void SpatialField::buildGrid()
       "buildGrid() not implemented for field type");
 }
 
-float SpatialField::stepSize() const
+void SpatialField::setGradientDelta(float delta)
 {
-  return vfield.baseDT;
-}
-
-void SpatialField::setStepSize(float size)
-{
-  vfield.baseDT = size;
+  vfield.delta = delta;
 }
 
 void SpatialField::dispatch()

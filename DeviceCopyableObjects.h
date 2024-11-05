@@ -244,14 +244,11 @@ inline hit_record<Ray, primitive<unsigned>> intersect(
 {
   hit_record<Ray, primitive<unsigned>> result;
   float3 pos = ray.ori;
+  result.hit = false;
 
   if (!block.filterDomain().contains(pos)) {
-    result.hit = false;
     return result;
   }
-
-  result.t = 0.f;
-  result.hit = true;
 
   float *prd = (float *)ray.prd;
   float &sumWeightedValues = prd[0];
@@ -339,9 +336,9 @@ inline hit_record<Ray, primitive<unsigned>> intersect(
 
 struct GridAccel
 {
-  unsigned fieldID{UINT_MAX}; // the field this grid belongs to
   int3 dims;
   box3 worldBounds;
+  float *stepSizes; // step size to take
   box1 *valueRanges; // min/max ranges
   float *maxOpacities; // used as majorants
 
@@ -350,16 +347,46 @@ struct GridAccel
   {
     return dims != int3(0) && valueRanges && maxOpacities;
   }
+
+  VSNRAY_FUNC
+  inline box1 valueRange(int leafID) const
+  {
+    if (leafID >= 0 && valueRanges)
+      return valueRanges[leafID];
+    else
+      return box1(-FLT_MAX, FLT_MAX);
+  }
+
+  VSNRAY_FUNC
+  inline float stepSize(int leafID) const
+  {
+    if (leafID >= 0 && stepSizes)
+      return stepSizes[leafID];
+    else
+      return 1.f;
+  }
 };
+
+inline GridAccel createGridAccel()
+{
+  GridAccel accel;
+  memset(&accel,0,sizeof(accel));
+  accel.dims = int3(0);
+  accel.worldBounds = box3f(float3(FLT_MAX),float3(-FLT_MAX));
+  accel.stepSizes = nullptr;
+  accel.valueRanges = nullptr;
+  accel.maxOpacities = nullptr;
+  return accel;
+}
 
 // Spatial Field //
 
 struct SpatialField
 {
   enum Type { StructuredRegular, Unstructured, BlockStructured, Unknown, };
-  Type type{Unknown};
-  unsigned fieldID{UINT_MAX};
-  float baseDT{0.5f};
+  Type type;
+  unsigned fieldID;
+  float delta;
   GridAccel gridAccel;
   mat4x3 voxelSpaceTransform;
 
@@ -414,8 +441,17 @@ struct SpatialField
   };
 };
 
+inline SpatialField createSpatialField()
+{
+  SpatialField field;
+  memset(&field,0,sizeof(field));
+  field.fieldID = UINT_MAX;
+  field.delta = 0.5f;
+  return field;
+}
+
 VSNRAY_FUNC
-inline bool sampleField(SpatialField sf, vec3 P, float &value) {
+inline bool sampleField(const SpatialField &sf, vec3 P, float &value) {
   // This assumes that P is in voxel space!
   if (sf.type == SpatialField::StructuredRegular) {
     value = tex3D(sf.asStructuredRegular.sampler,P);
@@ -444,7 +480,7 @@ inline bool sampleField(SpatialField sf, vec3 P, float &value) {
 
     auto hr = intersect(ray, sf.asBlockStructured.samplingBVH);
 
-    if (!hr.hit || basisPRD[1] == 0.f)
+    if (basisPRD[1] == 0.f)
       return false;
 
     value = basisPRD[0]/basisPRD[1];
@@ -455,14 +491,14 @@ inline bool sampleField(SpatialField sf, vec3 P, float &value) {
 }
 
 VSNRAY_FUNC
-inline bool sampleGradient(SpatialField sf, vec3 P, float3 &value) {
+inline bool sampleGradient(const SpatialField &sf, vec3 P, float3 &value) {
   float x0=0, x1=0, y0=0, y1=0, z0=0, z1=0;
-  bool b0 = sampleField(sf, P+float3{sf.baseDT, 0.f, 0.f}, x1);
-  bool b1 = sampleField(sf, P-float3{sf.baseDT, 0.f, 0.f}, x0);
-  bool b2 = sampleField(sf, P+float3{0.f, sf.baseDT, 0.f}, y1);
-  bool b3 = sampleField(sf, P-float3{0.f, sf.baseDT, 0.f}, y0);
-  bool b4 = sampleField(sf, P+float3{0.f, 0.f, sf.baseDT}, z1);
-  bool b5 = sampleField(sf, P-float3{0.f, 0.f, sf.baseDT}, z0);
+  bool b0 = sampleField(sf, P+float3{sf.delta, 0.f, 0.f}, x1);
+  bool b1 = sampleField(sf, P-float3{sf.delta, 0.f, 0.f}, x0);
+  bool b2 = sampleField(sf, P+float3{0.f, sf.delta, 0.f}, y1);
+  bool b3 = sampleField(sf, P-float3{0.f, sf.delta, 0.f}, y0);
+  bool b4 = sampleField(sf, P+float3{0.f, 0.f, sf.delta}, z1);
+  bool b5 = sampleField(sf, P-float3{0.f, 0.f, sf.delta}, z0);
   if (b0 && b1 && b2 && b3 && b4 && b5) {
     value = float3{x1,y1,z1}-float3{x0,y0,z0};
     return true; // TODO
@@ -511,6 +547,15 @@ struct Volume
 
   aabb bounds;
 };
+
+inline Volume createVolume()
+{
+  Volume vol;
+  memset(&vol,0,sizeof(vol));
+  vol.volID  = UINT_MAX;
+  vol.bounds.invalidate();
+  return vol;
+}
 
 VSNRAY_FUNC
 inline aabb get_bounds(const Volume &vol)
@@ -688,19 +733,21 @@ inline hit_record<Ray, primitive<unsigned>> intersect(
   if (!boxHit.hit)
     return result;
 
-  float dt = iso.field.baseDT;
+  const auto &sf = iso.field;
+
+  float unitDistance = 1.f;
 
   auto isectFunc = [&](const int leafID, float t0, float t1) {
     bool empty = (leafID != -1);
 
-    if (leafID >= 0 && iso.field.gridAccel.valueRanges) {
-      box1 valueRange = iso.field.gridAccel.valueRanges[leafID];
-      for (unsigned i=0;i<iso.numValues;i++) {
-        float isoValue = iso.values[i];
-        if (valueRange.min <= isoValue && isoValue < valueRange.max) {
-          empty = false;
-          break;
-        }
+    float dt = unitDistance * sf.gridAccel.stepSize(leafID);
+    box1 valueRange = sf.gridAccel.valueRange(leafID);
+
+    for (unsigned i=0;i<iso.numValues;i++) {
+      float isoValue = iso.values[i];
+      if (valueRange.contains(isoValue)) {
+        empty = false;
+        break;
       }
     }
 
@@ -709,22 +756,28 @@ inline hit_record<Ray, primitive<unsigned>> intersect(
 
     float t0_old = t0;
     float t1_old = t1;
-    t0 = t1 = boxHit.tnear-dt/2.f;
+    t0 = t1 = ray.tmin-dt/2.f;
     while (t0 < t0_old) t0 += dt;
     while (t1 < t1_old) t1 += dt;
 
+    float3 P1 = ray.ori+ray.dir*t0;
+    float v1 = 0.f;
+    bool sample1 = sampleField(sf,P1,v1);
+
     for (float t=t0;t<t1;t+=dt) {
-      float3 P1 = ray.ori+ray.dir*t;
       float3 P2 = ray.ori+ray.dir*(t+dt);
-      float v1 = 0.f, v2 = 0.f;
-      if (sampleField(iso.field,P1,v1)
-       && sampleField(iso.field,P2,v2)) {
+      float v2 = 0.f;
+      bool sample2 = sampleField(sf,P2,v2);
+      if (sample1 && sample2) {
+        box1f ival(fminf(v1,v2), fmaxf(v1,v2));
         unsigned numISOs = iso.numValues;
         bool hit=false;
         for (unsigned i=0;i<numISOs;i++) {
           float isoValue = iso.values[i];
-          if ((v1 <= isoValue && v2 > isoValue) || (v2 <= isoValue && v1 > isoValue)) {
-            float tHit = t+dt/2.f;
+          if (ival.contains(isoValue)) {
+            //float tHit = t+dt/2.f;
+            float f = (isoValue-v1) / (v2-v1);
+            float tHit = t+dt*f;
             if (tHit < result.t) {
               result.hit = true;
               result.prim_id = i;
@@ -736,18 +789,36 @@ inline hit_record<Ray, primitive<unsigned>> intersect(
         }
         if (hit) return false; // stop traversal
       }
+      P1 = P2;
+      v1 = v2;
+      sample1 = sample2;
     }
 
     return true; // cont. traversal to the next spat. partition
   };
 
-  ray.tmin = boxHit.tnear;
-  ray.tmax = boxHit.tfar;
-  if (iso.field.type == dco::SpatialField::Unstructured ||
-      iso.field.type == dco::SpatialField::StructuredRegular)
-    dda3(ray, iso.field.gridAccel.dims, iso.field.gridAccel.worldBounds, isectFunc);
+  ray.tmin = max(ray.tmin, boxHit.tnear);
+  ray.tmax = min(ray.tmax, boxHit.tfar);
+
+  // transform ray to voxel space
+  ray.ori = sf.pointToVoxelSpace(ray.ori);
+  ray.dir = sf.vectorToVoxelSpace(ray.dir);
+
+  const float dt_scale = length(ray.dir);
+  ray.dir = normalize(ray.dir);
+
+  ray.tmin = ray.tmin * dt_scale;
+  ray.tmax = ray.tmax * dt_scale;
+  unitDistance = unitDistance * dt_scale;
+
+  if (sf.gridAccel.isValid())
+    dda3(ray, sf.gridAccel.dims, sf.gridAccel.worldBounds, isectFunc);
   else
     isectFunc(-1, boxHit.tnear, boxHit.tfar);
+
+  if (result.hit) {
+    result.t /= dt_scale;
+  }
 
   return result;
 }
@@ -1360,6 +1431,16 @@ struct Instance
   box1 time;
 };
 
+inline Instance createInstance()
+{
+  Instance inst;
+  memset(&inst,0,sizeof(inst));
+  inst.instID  = UINT_MAX;
+  inst.userID  = UINT_MAX;
+  inst.groupID = UINT_MAX;
+  return inst;
+}
+
 VSNRAY_FUNC
 inline aabb get_bounds(const Instance &bls)
 {
@@ -1498,10 +1579,19 @@ inline HitRecordVolume intersectVolumes(Ray ray, const TLS &tls)
 
 struct Surface
 {
-  unsigned surfID{UINT_MAX};
-  unsigned geomID{UINT_MAX};
-  unsigned matID{UINT_MAX};
+  unsigned surfID;
+  unsigned geomID;
+  unsigned matID;
 };
+
+inline Surface createSurface()
+{
+  Surface surf;
+  surf.surfID = UINT_MAX;
+  surf.geomID = UINT_MAX;
+  surf.matID = UINT_MAX;
+  return surf;
+}
 
 // Geometry types (for dispatch) //
 
@@ -1524,8 +1614,8 @@ struct Geometry
     ISOSurface,
     Unknown,
   };
-  Type type{Unknown};
-  unsigned geomID{UINT_MAX};
+  Type type;
+  unsigned geomID;
 
   template <typename Primitive>
   VSNRAY_FUNC
@@ -1547,30 +1637,29 @@ struct Geometry
   Array index;
   Array normal;
   Array tangent;
-
-  VSNRAY_FUNC
-  inline bool isValid() const
-  {
-    if (type == ISOSurface) {
-      return as<dco::ISOSurface>(0).numValues > 0;
-    }
-    // TODO..
-    return true;
-  }
 };
+
+inline Geometry createGeometry()
+{
+  Geometry geom;
+  memset(&geom,0,sizeof(geom));
+  geom.type = Geometry::Unknown;
+  geom.geomID = UINT_MAX;
+  return geom;
+}
 
 // Sampler //
 
 struct Sampler
 {
   enum Type { Image1D, Image2D, Image3D, Transform, Primitive, Unknown, };
-  Type type{Unknown};
-  unsigned samplerID{UINT_MAX};
-  Attribute inAttribute{Attribute::_0};
-  mat4 inTransform{mat4::identity()};
-  float4 inOffset{0.f};
-  mat4 outTransform{mat4::identity()};
-  float4 outOffset{0.f};
+  Type type;
+  unsigned samplerID;
+  Attribute inAttribute;
+  mat4 inTransform;
+  float4 inOffset;
+  mat4 outTransform;
+  float4 outOffset;
   union {
 #ifdef WITH_CUDA
     cuda_texture_ref<vector<4, unorm<8>>, 1> asImage1D;
@@ -1606,6 +1695,20 @@ struct Sampler
   }
 };
 
+inline Sampler createSampler()
+{
+  Sampler samp;
+  memset(&samp,0,sizeof(samp));
+  samp.type = Sampler::Unknown;
+  samp.samplerID = UINT_MAX;
+  samp.inAttribute = Attribute::_0;
+  samp.inTransform = mat4::identity();
+  samp.inOffset = float4(0.f);
+  samp.outTransform = mat4::identity();
+  samp.outOffset = float4(0.f);
+  return samp;
+}
+
 // Params used by materials //
 
 struct MaterialParamRGB
@@ -1632,8 +1735,8 @@ enum class AlphaMode
 struct Material
 {
   enum Type { Matte, PhysicallyBased, Unknown, };
-  Type type{Unknown};
-  unsigned matID{UINT_MAX};
+  Type type;
+  unsigned matID;
   union {
     struct {
       MaterialParamRGB color;
@@ -1658,13 +1761,26 @@ struct Material
   };
 };
 
+inline Material createMaterial()
+{
+  Material mat;
+  memset(&mat,0,sizeof(mat));
+  mat.type = Material::Unknown;
+  mat.matID = UINT_MAX;
+  return mat;
+};
+
 VSNRAY_FUNC
 inline Material makeDefaultMaterial()
 {
   Material mat;
   mat.type = Material::Matte;
   mat.asMatte.color.rgb = vec3(0,1,0);
+  mat.asMatte.color.samplerID = UINT_MAX;
+  mat.asMatte.color.attribute = dco::Attribute::None;
   mat.asMatte.opacity.f = 1.f;
+  mat.asMatte.opacity.samplerID = UINT_MAX;
+  mat.asMatte.opacity.attribute = dco::Attribute::None;
   mat.asMatte.alphaMode = AlphaMode::Opaque;
   mat.asMatte.alphaCutoff = 0.5f;
   return mat;
@@ -1767,9 +1883,9 @@ inline vec3 sample_surface(const Quad &q, const vec3 reference_point, RNG &rng)
 struct Light
 {
   enum Type { Directional, Point, Quad, Spot, HDRI, Unknown, };
-  Type type{Unknown};
-  unsigned lightID{UINT_MAX};
-  bool visible{true};
+  Type type;
+  unsigned lightID;
+  bool visible;
   union {
     directional_light<float> asDirectional;
     point_light<float> asPoint;
@@ -1815,45 +1931,72 @@ struct Light
   };
 };
 
+inline Light createLight()
+{
+  Light light;
+  memset(&light,0,sizeof(light));
+  light.type = Light::Unknown;
+  light.lightID = UINT_MAX;
+  light.visible = true;
+  return light;
+}
+
 // Group //
 
 struct Group
 {
-  unsigned groupID{UINT_MAX};
+  unsigned groupID;
 
-  unsigned numBLSs{0};
-  dco::BLS *BLSs{nullptr};
-  unsigned numGeoms{0};
-  Handle *geoms{nullptr};
-  unsigned numMaterials{0};
-  Handle *materials{nullptr};
-  unsigned numVolumes{0};
-  Handle *volumes{nullptr};
-  unsigned numLights{0};
-  Handle *lights{nullptr};
-  uint32_t *objIds{nullptr}; // surface IDs, volume IDs, etc.
-  unsigned numObjIds{0};
+  unsigned numBLSs;
+  dco::BLS *BLSs;
+  unsigned numGeoms;
+  Handle *geoms;
+  unsigned numMaterials;
+  Handle *materials;
+  unsigned numVolumes;
+  Handle *volumes;
+  unsigned numLights;
+  Handle *lights;
+  uint32_t *objIds; // surface IDs, volume IDs, etc.
+  unsigned numObjIds;
 };
+
+inline Group createGroup()
+{
+  Group group;
+  memset(&group,0,sizeof(group));
+  group.groupID = UINT_MAX;
+  return group;
+}
 
 // World //
 
 struct World
 {
-  unsigned worldID{UINT_MAX};
+  unsigned worldID;
 
-  unsigned numLights{0};
+  unsigned numLights;
   // flat list of lights active in all groups:
-  Handle *allLights{nullptr};
+  Handle *allLights;
 };
+
+inline World createWorld()
+{
+  World world;
+  world.worldID = UINT_MAX;
+  world.numLights = 0;
+  world.allLights = nullptr;
+  return world;
+}
 
 // Camera //
 
 struct Camera
 {
   enum Type { Matrix, Pinhole, Ortho, Unknown, };
-  Type type{Unknown};
-  unsigned camID{UINT_MAX};
-  box1 shutter{0.5f, 0.5f};
+  Type type;
+  unsigned camID;
+  box1 shutter;
   thin_lens_camera asPinholeCam;
   union {
     matrix_camera asMatrixCam;
@@ -1911,42 +2054,52 @@ struct Camera
   }
 };
 
+inline Camera createCamera()
+{
+  Camera cam;
+  memset(&cam,0,sizeof(cam));
+  cam.type = Camera::Unknown;
+  cam.camID = UINT_MAX;
+  cam.shutter = {0.5f, 0.5f};
+  return cam;
+}
+
 // Frame //
 
 struct Frame
 {
-  unsigned frameID{UINT_MAX};
-  unsigned frameCounter{0};
+  unsigned frameID;
+  unsigned frameCounter;
   uint2 size;
   float2 invSize;
-  int perPixelBytes{1};
-  bool stochasticRendering{false};
+  int perPixelBytes;
+  bool stochasticRendering;
 
-  anari::DataType colorType{ANARI_UNKNOWN};
-  anari::DataType depthType{ANARI_UNKNOWN};
-  anari::DataType normalType{ANARI_UNKNOWN};
-  anari::DataType albedoType{ANARI_UNKNOWN};
-  anari::DataType primIdType{ANARI_UNKNOWN};
-  anari::DataType objIdType{ANARI_UNKNOWN};
-  anari::DataType instIdType{ANARI_UNKNOWN};
+  anari::DataType colorType;
+  anari::DataType depthType;
+  anari::DataType normalType;
+  anari::DataType albedoType;
+  anari::DataType primIdType;
+  anari::DataType objIdType;
+  anari::DataType instIdType;
 
-  uint8_t *pixelBuffer{nullptr};
-  float *depthBuffer{nullptr};
-  float3 *normalBuffer{nullptr};
-  float3 *albedoBuffer{nullptr};
-  float4 *motionVecBuffer{nullptr};
-  uint32_t *primIdBuffer{nullptr};
-  uint32_t *objIdBuffer{nullptr};
-  uint32_t *instIdBuffer{nullptr};
-  float4 *accumBuffer{nullptr};
+  uint8_t *pixelBuffer;
+  float *depthBuffer;
+  float3 *normalBuffer;
+  float3 *albedoBuffer;
+  float4 *motionVecBuffer;
+  uint32_t *primIdBuffer;
+  uint32_t *objIdBuffer;
+  uint32_t *instIdBuffer;
+  float4 *accumBuffer;
 
   struct {
-    bool enabled{false};
-    float alpha{0.3f};
-    float4 *currBuffer{nullptr};
-    float4 *prevBuffer{nullptr};
-    float3 *currAlbedoBuffer{nullptr};
-    float3 *prevAlbedoBuffer{nullptr};
+    bool enabled;
+    float alpha;
+    float4 *currBuffer;
+    float4 *prevBuffer;
+    float3 *currAlbedoBuffer;
+    float3 *prevAlbedoBuffer;
 #ifdef WITH_CUDA
     cuda_texture_ref<float4, 2> history;
 #elif defined(WITH_HIP)
@@ -2085,5 +2238,22 @@ struct Frame
     toneMap(x, y, accumSample(x, y, accumID, s));
   }
 };
+
+inline Frame createFrame()
+{
+  Frame frame;
+  memset(&frame,0,sizeof(frame));
+  frame.frameID = UINT_MAX;
+  frame.perPixelBytes = 1;
+  frame.colorType = ANARI_UNKNOWN;
+  frame.depthType = ANARI_UNKNOWN;
+  frame.normalType = ANARI_UNKNOWN;
+  frame.albedoType = ANARI_UNKNOWN;
+  frame.primIdType = ANARI_UNKNOWN;
+  frame.objIdType = ANARI_UNKNOWN;
+  frame.instIdType = ANARI_UNKNOWN;
+  frame.taa.alpha = 0.3f;
+  return frame;
+}
 
 } // namespace visionaray::dco

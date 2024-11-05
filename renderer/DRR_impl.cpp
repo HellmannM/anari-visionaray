@@ -6,8 +6,7 @@ namespace visionaray {
 
 VSNRAY_FUNC
 inline PixelSample renderSample(ScreenSample &ss, Ray ray, unsigned worldID,
-    const VisionarayGlobalState::DeviceObjectRegistry &onDevice,
-    const RendererState &rendererState)
+    const DeviceObjectRegistry &onDevice, const RendererState &rendererState)
 {
   PixelSample result;
   result.color = rendererState.bgColor;
@@ -40,12 +39,12 @@ void VisionarayRendererDRR::renderFrame(const dco::Frame &frame,
                                             const dco::Camera &cam,
                                             uint2 size,
                                             VisionarayGlobalState *state,
-                                            const VisionarayGlobalState::DeviceObjectRegistry &DD,
+                                            const DeviceObjectRegistry &DD,
                                             const RendererState &rendererState,
                                             unsigned worldID, int frameID)
 {
 #ifdef WITH_CUDA
-  VisionarayGlobalState::DeviceObjectRegistry *onDevicePtr;
+  DeviceObjectRegistry *onDevicePtr;
   CUDA_SAFE_CALL(cudaMalloc(&onDevicePtr, sizeof(DD)));
   CUDA_SAFE_CALL(cudaMemcpy(onDevicePtr, &DD, sizeof(DD), cudaMemcpyHostToDevice));
 
@@ -62,7 +61,7 @@ void VisionarayRendererDRR::renderFrame(const dco::Frame &frame,
 
   cuda::for_each(0, size.x, 0, size.y,
 #elif defined(WITH_HIP)
-  VisionarayGlobalState::DeviceObjectRegistry *onDevicePtr;
+  DeviceObjectRegistry *onDevicePtr;
   HIP_SAFE_CALL(hipMalloc(&onDevicePtr, sizeof(DD)));
   HIP_SAFE_CALL(hipMemcpy(onDevicePtr, &DD, sizeof(DD), hipMemcpyHostToDevice));
 
@@ -86,7 +85,7 @@ void VisionarayRendererDRR::renderFrame(const dco::Frame &frame,
 #endif
       [=] VSNRAY_GPU_FUNC (int x, int y) {
 
-        const VisionarayGlobalState::DeviceObjectRegistry &onDevice = *onDevicePtr;
+        const DeviceObjectRegistry &onDevice = *onDevicePtr;
         const auto &rendererState = *rendererStatePtr;
         const auto &frame = *framePtr;
 

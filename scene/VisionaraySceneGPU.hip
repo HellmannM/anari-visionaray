@@ -111,17 +111,20 @@ void VisionaraySceneGPU::commit()
       dco::Instance inst;
       HIP_SAFE_CALL(hipMemcpy(&inst, deviceState()->onDevice.instances+instID,
                               sizeof(inst), hipMemcpyDefault));
+      if (inst.theBVH.num_nodes() == 0) continue;
 
       m_impl->parent->m_worldBLSs.alloc(inst);
     }
 
     // Build TLS
-    binned_sah_builder tlsBuilder;
-    typedef index_bvh<dco::Instance> WorldTLS;
-    auto h_worldTLS = tlsBuilder.build(
-        WorldTLS{}, m_impl->parent->m_worldBLSs.devicePtr(),
-        m_impl->parent->m_worldBLSs.size());
-    m_impl->m_worldTLS = GPU::WorldTLS(h_worldTLS);
+    if (!m_impl->parent->m_worldBLSs.empty()) {
+      binned_sah_builder tlsBuilder;
+      typedef index_bvh<dco::Instance> WorldTLS;
+      auto h_worldTLS = tlsBuilder.build(
+          WorldTLS{}, m_impl->parent->m_worldBLSs.devicePtr(),
+          m_impl->parent->m_worldBLSs.size());
+      m_impl->m_worldTLS = GPU::WorldTLS(h_worldTLS);
+    }
 
     // Build flat list of lights
     m_impl->parent->m_allLights.clear();
@@ -163,7 +166,6 @@ void VisionaraySceneGPU::commit()
       if (!dco::validHandle(geomID)) continue;
 
       dco::Geometry geom = deviceState()->dcos.geometries[geomID];
-      if (!geom.isValid()) continue;
 
       switch (geom.type) {
         case dco::Geometry::Triangle:
@@ -213,7 +215,6 @@ void VisionaraySceneGPU::commit()
       if (!dco::validHandle(geomID)) continue;
 
       const dco::Geometry &geom = deviceState()->dcos.geometries[geomID];
-      if (!geom.isValid()) continue;
 
       binned_sah_builder builder;
 
@@ -318,7 +319,6 @@ void VisionaraySceneGPU::commit()
       if (!dco::validHandle(geomID)) continue;
 
       const dco::Geometry &geom = deviceState()->dcos.geometries[geomID];
-      if (!geom.isValid()) continue;
 
       dco::BLS bls;
       bls.blsID = m_impl->parent->m_BLSs.alloc(bls);
@@ -369,12 +369,14 @@ void VisionaraySceneGPU::commit()
     }
 
     // Build TLS
-    binned_sah_builder tlsBuilder;
-    typedef index_bvh<dco::BLS> TLS;
-    auto h_TLS = tlsBuilder.build(
-        TLS{}, m_impl->parent->m_BLSs.devicePtr(),
-        m_impl->parent->m_BLSs.size());
-    m_impl->m_TLS = GPU::TLS(h_TLS);
+    if (!m_impl->parent->m_BLSs.empty()) {
+      binned_sah_builder tlsBuilder;
+      typedef index_bvh<dco::BLS> TLS;
+      auto h_TLS = tlsBuilder.build(
+          TLS{}, m_impl->parent->m_BLSs.devicePtr(),
+          m_impl->parent->m_BLSs.size());
+      m_impl->m_TLS = GPU::TLS(h_TLS);
+    }
   }
 }
 
@@ -420,75 +422,76 @@ void VisionaraySceneGPU::dispatch()
 void VisionaraySceneGPU::attachGeometry(
     dco::Geometry geom, unsigned geomID, unsigned userID)
 {
+  if (geom.primitives.len == 0)
+    return;
+
   m_impl->parent->m_geometries.set(geomID, geom.geomID);
   m_impl->parent->m_objIds.set(geomID, userID);
 
   // Patch geomID into scene primitives
   // (first copy to CPU, patch there, then copy back...)
-  if (geom.primitives.len > 0) {
-    if (geom.type == dco::Geometry::Triangle) {
-      std::vector<basic_triangle<3,float>> hostData(geom.primitives.len);
-      HIP_SAFE_CALL(hipMemcpy(hostData.data(), geom.primitives.data,
-          hostData.size() * sizeof(hostData[0]), hipMemcpyDeviceToHost));
-      for (size_t i=0;i<geom.primitives.len;++i) {
-        hostData[i].geom_id = geomID;
-      }
-      HIP_SAFE_CALL(hipMemcpy((void *)geom.primitives.data, hostData.data(),
-          hostData.size() * sizeof(hostData[0]), hipMemcpyHostToDevice));
-    } else if (geom.type == dco::Geometry::Quad) {
-      std::vector<basic_triangle<3,float>> hostData(geom.primitives.len);
-      HIP_SAFE_CALL(hipMemcpy(hostData.data(), geom.primitives.data,
-          hostData.size() * sizeof(hostData[0]), hipMemcpyDeviceToHost));
-      for (size_t i=0;i<geom.primitives.len;++i) {
-        hostData[i].geom_id = geomID;
-      }
-      HIP_SAFE_CALL(hipMemcpy((void *)geom.primitives.data, hostData.data(),
-          hostData.size() * sizeof(hostData[0]), hipMemcpyHostToDevice));
-    } else if (geom.type == dco::Geometry::Sphere) {
-      std::vector<basic_sphere<float>> hostData(geom.primitives.len);
-      HIP_SAFE_CALL(hipMemcpy(hostData.data(), geom.primitives.data,
-          hostData.size() * sizeof(hostData[0]), hipMemcpyDeviceToHost));
-      for (size_t i=0;i<geom.primitives.len;++i) {
-        hostData[i].geom_id = geomID;
-      }
-      HIP_SAFE_CALL(hipMemcpy((void *)geom.primitives.data, hostData.data(),
-          hostData.size() * sizeof(hostData[0]), hipMemcpyHostToDevice));
-    } else if (geom.type == dco::Geometry::Cone) {
-      std::vector<dco::Cone> hostData(geom.primitives.len);
-      HIP_SAFE_CALL(hipMemcpy(hostData.data(), geom.primitives.data,
-          hostData.size() * sizeof(hostData[0]), hipMemcpyDeviceToHost));
-      for (size_t i=0;i<geom.primitives.len;++i) {
-        hostData[i].geom_id = geomID;
-      }
-      HIP_SAFE_CALL(hipMemcpy((void *)geom.primitives.data, hostData.data(),
-          hostData.size() * sizeof(hostData[0]), hipMemcpyHostToDevice));
-    } else if (geom.type == dco::Geometry::Cylinder) {
-      std::vector<basic_cylinder<float>> hostData(geom.primitives.len);
-      HIP_SAFE_CALL(hipMemcpy(hostData.data(), geom.primitives.data,
-          hostData.size() * sizeof(hostData[0]), hipMemcpyDeviceToHost));
-      for (size_t i=0;i<geom.primitives.len;++i) {
-        hostData[i].geom_id = geomID;
-      }
-      HIP_SAFE_CALL(hipMemcpy((void *)geom.primitives.data, hostData.data(),
-          hostData.size() * sizeof(hostData[0]), hipMemcpyHostToDevice));
-    } else if (geom.type == dco::Geometry::BezierCurve) {
-      std::vector<dco::BezierCurve> hostData(geom.primitives.len);
-      HIP_SAFE_CALL(hipMemcpy(hostData.data(), geom.primitives.data,
-          hostData.size() * sizeof(hostData[0]), hipMemcpyDeviceToHost));
-      for (size_t i=0;i<geom.primitives.len;++i) {
-        hostData[i].geom_id = geomID;
-      }
-      HIP_SAFE_CALL(hipMemcpy((void *)geom.primitives.data, hostData.data(),
-          hostData.size() * sizeof(hostData[0]), hipMemcpyHostToDevice));
-    } else if (geom.type == dco::Geometry::ISOSurface) {
-      dco::ISOSurface iso;
-      HIP_SAFE_CALL(hipMemcpy(&iso, geom.primitives.data,
-                              sizeof(iso), hipMemcpyDeviceToHost));
-      iso.isoID = geomID;
-      iso.geomID = geomID;
-      HIP_SAFE_CALL(hipMemcpy((void *)geom.primitives.data, &iso,
-                              sizeof(iso), hipMemcpyHostToDevice));
+  if (geom.type == dco::Geometry::Triangle) {
+    std::vector<basic_triangle<3,float>> hostData(geom.primitives.len);
+    HIP_SAFE_CALL(hipMemcpy(hostData.data(), geom.primitives.data,
+        hostData.size() * sizeof(hostData[0]), hipMemcpyDeviceToHost));
+    for (size_t i=0;i<geom.primitives.len;++i) {
+      hostData[i].geom_id = geomID;
     }
+    HIP_SAFE_CALL(hipMemcpy((void *)geom.primitives.data, hostData.data(),
+        hostData.size() * sizeof(hostData[0]), hipMemcpyHostToDevice));
+  } else if (geom.type == dco::Geometry::Quad) {
+    std::vector<basic_triangle<3,float>> hostData(geom.primitives.len);
+    HIP_SAFE_CALL(hipMemcpy(hostData.data(), geom.primitives.data,
+        hostData.size() * sizeof(hostData[0]), hipMemcpyDeviceToHost));
+    for (size_t i=0;i<geom.primitives.len;++i) {
+      hostData[i].geom_id = geomID;
+    }
+    HIP_SAFE_CALL(hipMemcpy((void *)geom.primitives.data, hostData.data(),
+        hostData.size() * sizeof(hostData[0]), hipMemcpyHostToDevice));
+  } else if (geom.type == dco::Geometry::Sphere) {
+    std::vector<basic_sphere<float>> hostData(geom.primitives.len);
+    HIP_SAFE_CALL(hipMemcpy(hostData.data(), geom.primitives.data,
+        hostData.size() * sizeof(hostData[0]), hipMemcpyDeviceToHost));
+    for (size_t i=0;i<geom.primitives.len;++i) {
+      hostData[i].geom_id = geomID;
+    }
+    HIP_SAFE_CALL(hipMemcpy((void *)geom.primitives.data, hostData.data(),
+        hostData.size() * sizeof(hostData[0]), hipMemcpyHostToDevice));
+  } else if (geom.type == dco::Geometry::Cone) {
+    std::vector<dco::Cone> hostData(geom.primitives.len);
+    HIP_SAFE_CALL(hipMemcpy(hostData.data(), geom.primitives.data,
+        hostData.size() * sizeof(hostData[0]), hipMemcpyDeviceToHost));
+    for (size_t i=0;i<geom.primitives.len;++i) {
+      hostData[i].geom_id = geomID;
+    }
+    HIP_SAFE_CALL(hipMemcpy((void *)geom.primitives.data, hostData.data(),
+        hostData.size() * sizeof(hostData[0]), hipMemcpyHostToDevice));
+  } else if (geom.type == dco::Geometry::Cylinder) {
+    std::vector<basic_cylinder<float>> hostData(geom.primitives.len);
+    HIP_SAFE_CALL(hipMemcpy(hostData.data(), geom.primitives.data,
+        hostData.size() * sizeof(hostData[0]), hipMemcpyDeviceToHost));
+    for (size_t i=0;i<geom.primitives.len;++i) {
+      hostData[i].geom_id = geomID;
+    }
+    HIP_SAFE_CALL(hipMemcpy((void *)geom.primitives.data, hostData.data(),
+        hostData.size() * sizeof(hostData[0]), hipMemcpyHostToDevice));
+  } else if (geom.type == dco::Geometry::BezierCurve) {
+    std::vector<dco::BezierCurve> hostData(geom.primitives.len);
+    HIP_SAFE_CALL(hipMemcpy(hostData.data(), geom.primitives.data,
+        hostData.size() * sizeof(hostData[0]), hipMemcpyDeviceToHost));
+    for (size_t i=0;i<geom.primitives.len;++i) {
+      hostData[i].geom_id = geomID;
+    }
+    HIP_SAFE_CALL(hipMemcpy((void *)geom.primitives.data, hostData.data(),
+        hostData.size() * sizeof(hostData[0]), hipMemcpyHostToDevice));
+  } else if (geom.type == dco::Geometry::ISOSurface) {
+    dco::ISOSurface iso;
+    HIP_SAFE_CALL(hipMemcpy(&iso, geom.primitives.data,
+                            sizeof(iso), hipMemcpyDeviceToHost));
+    iso.isoID = geomID;
+    iso.geomID = geomID;
+    HIP_SAFE_CALL(hipMemcpy((void *)geom.primitives.data, &iso,
+                            sizeof(iso), hipMemcpyHostToDevice));
   }
 
 

@@ -6,8 +6,7 @@ namespace visionaray {
 
 VSNRAY_FUNC
 inline PixelSample renderSample(ScreenSample &ss, Ray ray, unsigned worldID,
-    const VisionarayGlobalState::DeviceObjectRegistry &onDevice,
-    const RendererState &rendererState)
+    const DeviceObjectRegistry &onDevice, const RendererState &rendererState)
 {
   PixelSample result;
   result.color = rendererState.bgColor;
@@ -66,21 +65,7 @@ inline PixelSample renderSample(ScreenSample &ss, Ray ray, unsigned worldID,
       for (unsigned lightID=0; lightID<world.numLights; ++lightID) {
         const dco::Light &light = onDevice.lights[world.allLights[lightID]];
 
-        light_sample<float> ls;
-        vec3f intensity(0.f);
-        float dist = 1.f;
-        ls.pdf = 0.f;
-
-        if (light.type == dco::Light::Point) {
-          ls = light.asPoint.sample(hitPos+1e-4f, ss.random);
-          intensity = light.asPoint.intensity(hitPos);
-        } else if (light.type == dco::Light::Directional) {
-          ls = light.asDirectional.sample(hitPos+1e-4f, ss.random);
-          intensity = light.asDirectional.intensity(hitPos);
-        } else if (light.type == dco::Light::HDRI) {
-          ls = light.asHDRI.sample(hitPos+1e-4f, ss.random);
-          intensity = light.asHDRI.intensity(ls.dir);
-        }
+        LightSample ls = sampleLight(light, hitPos, ss.random);
 
         float3 brdf = evalMaterial(mat,
                                    onDevice.samplers,
@@ -89,8 +74,8 @@ inline PixelSample renderSample(ScreenSample &ss, Ray ray, unsigned worldID,
                                    gn, sn,
                                    viewDir,
                                    ls.dir,
-                                   intensity);
-        shadedColor += brdf / ls.pdf / (dist*dist);
+                                   ls.intensity);
+        shadedColor += brdf / ls.pdf / ls.dist2;
       }
 
       shadedColor +=
@@ -184,12 +169,12 @@ void VisionarayRendererRaycast::renderFrame(const dco::Frame &frame,
                                             const dco::Camera &cam,
                                             uint2 size,
                                             VisionarayGlobalState *state,
-                                            const VisionarayGlobalState::DeviceObjectRegistry &DD,
+                                            const DeviceObjectRegistry &DD,
                                             const RendererState &rendererState,
                                             unsigned worldID, int frameID)
 {
 #ifdef WITH_CUDA
-  VisionarayGlobalState::DeviceObjectRegistry *onDevicePtr;
+  DeviceObjectRegistry *onDevicePtr;
   CUDA_SAFE_CALL(cudaMalloc(&onDevicePtr, sizeof(DD)));
   CUDA_SAFE_CALL(cudaMemcpy(onDevicePtr, &DD, sizeof(DD), cudaMemcpyHostToDevice));
 
@@ -206,7 +191,7 @@ void VisionarayRendererRaycast::renderFrame(const dco::Frame &frame,
 
   cuda::for_each(0, size.x, 0, size.y,
 #elif defined(WITH_HIP)
-  VisionarayGlobalState::DeviceObjectRegistry *onDevicePtr;
+  DeviceObjectRegistry *onDevicePtr;
   HIP_SAFE_CALL(hipMalloc(&onDevicePtr, sizeof(DD)));
   HIP_SAFE_CALL(hipMemcpy(onDevicePtr, &DD, sizeof(DD), hipMemcpyHostToDevice));
 
@@ -230,7 +215,7 @@ void VisionarayRendererRaycast::renderFrame(const dco::Frame &frame,
 #endif
       [=] VSNRAY_GPU_FUNC (int x, int y) {
 
-        const VisionarayGlobalState::DeviceObjectRegistry &onDevice = *onDevicePtr;
+        const DeviceObjectRegistry &onDevice = *onDevicePtr;
         const auto &rendererState = *rendererStatePtr;
         const auto &frame = *framePtr;
 

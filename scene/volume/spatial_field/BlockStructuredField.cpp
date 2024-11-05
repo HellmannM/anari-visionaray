@@ -116,7 +116,7 @@ void BlockStructuredField::commit()
   vec3 T = voxelBounds.min-m_bounds.min;
   vfield.voxelSpaceTransform = mat4x3(S,T);
 
-  setStepSize(length(bounds().max-bounds().min)/50.f);
+  setGradientDelta(1.f);
 
   buildGrid();
 
@@ -135,13 +135,70 @@ aabb BlockStructuredField::bounds() const
   return m_bounds;
 }
 
+#ifdef WITH_CUDA
+__global__ void BlockStructuredField_buildGridGPU(dco::GridAccel    vaccel,
+                                                  const dco::Block *blocks,
+                                                  size_t            numBlocks,
+                                                  float3            gridOrigin,
+                                                  float3            gridSpacing)
+{
+  size_t blockID = blockIdx.x * size_t(blockDim.x) + threadIdx.x;
+
+  if (blockID >= numBlocks)
+    return;
+
+  const auto &block = blocks[blockID];
+  int cellSize = block.cellSize();
+
+  for (int z=0; z<block.numCells().z; ++z) {
+    for (int y=0; y<block.numCells().y; ++y) {
+      for (int x=0; x<block.numCells().x; ++x) {
+        vec3i cellID(x,y,z);
+        vec3i cell_lower = (block.bounds.min+cellID)*cellSize;
+        vec3i cell_upper = (block.bounds.min+cellID+vec3i(1))*cellSize;
+        aabb cellBounds(vec3f(cell_lower)-vec3f(cellSize*0.5f),
+                        vec3f(cell_upper)+vec3f(cellSize*0.5f)); // +/- filterDomain
+        // transform to world space (..TODO: untested!)
+        cellBounds.min *= gridSpacing;
+        cellBounds.max *= gridSpacing;
+        cellBounds.min += gridOrigin;
+        cellBounds.max += gridOrigin;
+        float scalar = block.getScalar(x,y,z);
+
+        const vec3i loMC = projectOnGrid(cellBounds.min,vaccel.dims,vaccel.worldBounds);
+        const vec3i upMC = projectOnGrid(cellBounds.max,vaccel.dims,vaccel.worldBounds);
+
+        for (int mcz=loMC.z; mcz<=upMC.z; ++mcz) {
+          for (int mcy=loMC.y; mcy<=upMC.y; ++mcy) {
+            for (int mcx=loMC.x; mcx<=upMC.x; ++mcx) {
+              const vec3i mcID(mcx,mcy,mcz);
+              updateMC(mcID,vaccel.dims,scalar,vaccel.valueRanges);
+              updateMCStepSize(mcID,vaccel.dims,cellSize,vaccel.stepSizes);
+            }
+          }
+        }
+      }
+    }
+  }
+}
+#endif
+
 void BlockStructuredField::buildGrid()
 {
 #ifdef WITH_CUDA
-  return;
-#endif
-  int3 dims{128, 128, 128};
   box3f worldBounds = {bounds().min,bounds().max};
+  int3 dims{(worldBounds.max-worldBounds.min)/float3(8.f)};
+  m_gridAccel.init(dims, worldBounds);
+
+  dco::GridAccel &vaccel = m_gridAccel.visionarayAccel();
+
+  size_t numThreads = 1024;
+  size_t numBlocks = m_blocks.size();
+  BlockStructuredField_buildGridGPU<<<div_up(numBlocks, numThreads), numThreads>>>(
+    vaccel, m_blocks.devicePtr(), numBlocks, m_params.gridOrigin, m_params.gridSpacing);
+#else
+  box3f worldBounds = {bounds().min,bounds().max};
+  int3 dims{(worldBounds.max-worldBounds.min)/float3(8.f)};
   m_gridAccel.init(dims, worldBounds);
 
   dco::GridAccel &vaccel = m_gridAccel.visionarayAccel();
@@ -173,7 +230,8 @@ void BlockStructuredField::buildGrid()
               for (int mcy=loMC.y; mcy<=upMC.y; ++mcy) {
                 for (int mcx=loMC.x; mcx<=upMC.x; ++mcx) {
                   const vec3i mcID(mcx,mcy,mcz);
-                  updateMC(mcID,dims,scalar,vaccel.valueRanges);
+                  updateMC(mcID,vaccel.dims,scalar,vaccel.valueRanges);
+                  updateMCStepSize(mcID,vaccel.dims,cellSize,vaccel.stepSizes);
                 }
               }
             }
@@ -181,6 +239,7 @@ void BlockStructuredField::buildGrid()
         }
       }
   });
+#endif
 }
 
 } // namespace visionaray

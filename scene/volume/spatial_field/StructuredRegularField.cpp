@@ -35,7 +35,7 @@ void StructuredRegularField::commit()
   vec3 T = -bounds().min;
   vfield.voxelSpaceTransform = mat4x3(S,T);
 
-  setStepSize(min_element(m_spacing / 2.f));
+  setGradientDelta(min_element(m_spacing / 2.f));
 
 #if defined(WITH_CUDA) || defined(WITH_HIP)
   texture<float, 3> tex(m_dims.x, m_dims.y, m_dims.z);
@@ -97,7 +97,12 @@ void StructuredRegularField::buildGrid()
 #endif
   int3 gridDims{16, 16, 16};
   box3f worldBounds = {bounds().min,bounds().max};
-  m_gridAccel.init(gridDims, worldBounds);
+  // grid bounds are in "voxel space" (which for structured
+  // volumes is just the [0:1] texture coordinate system:
+  box3f gridBounds = worldBounds;
+  gridBounds.min = vfield.pointToVoxelSpace(gridBounds.min);
+  gridBounds.max = vfield.pointToVoxelSpace(gridBounds.max);
+  m_gridAccel.init(gridDims, gridBounds);
 
   dco::GridAccel &vaccel = m_gridAccel.visionarayAccel();
 
@@ -121,6 +126,8 @@ void StructuredRegularField::buildGrid()
             for (int mcx=loMC.x; mcx<=upMC.x; ++mcx) {
               const vec3i mcID(mcx,mcy,mcz);
               updateMC(mcID,gridDims,value,vaccel.valueRanges);
+              updateMCStepSize(
+                  mcID,gridDims,min_element(m_spacing / 2.f),vaccel.stepSizes);
             }
           }
         }

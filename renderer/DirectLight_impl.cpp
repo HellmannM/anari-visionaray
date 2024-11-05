@@ -4,58 +4,6 @@
 
 namespace visionaray {
 
-struct HitRecLight
-{
-  bool hit{false};
-  float t{FLT_MAX};
-  unsigned lightID{UINT_MAX};
-};
-
-struct HitRec
-{
-  hit_record<Ray, primitive<unsigned>> surface;
-  dco::HitRecordVolume volume;
-  HitRecLight light;
-  bool hit{false};
-  bool volumeHit{false};
-  bool lightHit{false};
-};
-
-VSNRAY_FUNC
-HitRecLight intersectLights(ScreenSample &ss, const Ray &ray, unsigned worldID,
-    const VisionarayGlobalState::DeviceObjectRegistry &onDevice)
-{
-  HitRecLight hr;
-  dco::World world = onDevice.worlds[worldID];
-  for (unsigned lightID=0; lightID<world.numLights; ++lightID) {
-    const dco::Light &light = onDevice.lights[world.allLights[lightID]];
-    if (light.type == dco::Light::Quad && light.visible) {
-      auto hrl = intersect(ray, light.asQuad.geometry());
-      if (hrl.hit && hrl.t < hr.t) {
-        hr.hit = true;
-        hr.t = hrl.t;
-        hr.lightID = lightID;
-      }
-    }
-  }
-  return hr;
-}
-
-VSNRAY_FUNC
-HitRec intersectAll(ScreenSample &ss, const Ray &ray, unsigned worldID,
-    const VisionarayGlobalState::DeviceObjectRegistry &onDevice)
-{
-  HitRec hr;
-  hr.surface = intersectSurfaces<1>(ss, ray, onDevice, worldID);
-  hr.light   = intersectLights(ss, ray, worldID, onDevice);
-  hr.volume  = sampleFreeFlightDistanceAllVolumes(ss, ray, worldID, onDevice);
-  hr.hit = hr.surface.hit || hr.volume.hit || hr.light.hit;
-  hr.lightHit = hr.light.hit && (!hr.surface.hit || hr.light.t < hr.surface.t);
-  hr.volumeHit = hr.volume.hit && (!hr.surface.hit || hr.volume.t < hr.surface.t)
-                               && (!hr.light.hit || hr.volume.t < hr.light.t);
-  return hr;
-}
-
 struct ShadeRec
 {
   float3 throughput{1.f};
@@ -74,8 +22,7 @@ struct ShadeRec
 
 VSNRAY_FUNC
 bool shade(ScreenSample &ss, Ray &ray, unsigned worldID,
-    const VisionarayGlobalState::DeviceObjectRegistry &onDevice,
-    const RendererState &rendererState,
+    const DeviceObjectRegistry &onDevice, const RendererState &rendererState,
     const HitRec &hitRec,
     ShadeRec &shadeRec,
     PixelSample &result,
@@ -125,13 +72,17 @@ bool shade(ScreenSample &ss, Ray &ray, unsigned worldID,
         throughput = light.asQuad.intensity(hitPos);
       hdriMiss = true; // TODO?!
       return false;
-    } else if (hitRec.volumeHit) {
+    }
+
+    int instID = hitRec.volumeHit ? hrv.instID : hr.inst_id;
+    const dco::Instance &inst = onDevice.instances[instID];
+    const dco::Group &group = onDevice.groups[inst.groupID];
+
+    if (hitRec.volumeHit) {
       hitPos = ray.ori + hrv.t * ray.dir;
       eps = epsilonFrom(hitPos, ray.dir, hrv.t);
       viewDir = -ray.dir;
 
-      const dco::Instance &inst = onDevice.instances[hrv.instID];
-      const dco::Group &group = onDevice.groups[inst.groupID];
       const dco::Volume &vol = onDevice.volumes[group.volumes[hrv.volID]];
 
       if (rendererState.gradientShading) {
@@ -142,16 +93,17 @@ bool shade(ScreenSample &ss, Ray &ray, unsigned worldID,
       if (rendererState.ambientSamples > 0 && length(gn) < 1e-3f)
         gn = uniform_sample_sphere(ss.random(), ss.random());
 
+      sn = gn;
+
+      color.xyz() = hrv.albedo;
+
       result.depth = hrv.t;
-      result.albedo = hrv.albedo;
       result.objId = group.objIds[hrv.volID];
       result.instId = inst.userID;
     } else {
       result.depth = hr.t;
       result.primId = hr.prim_id;
 
-      const dco::Instance &inst = onDevice.instances[hr.inst_id];
-      const dco::Group &group = onDevice.groups[inst.groupID];
       const dco::Geometry &geom = onDevice.geometries[group.geoms[hr.geom_id]];
       const dco::Material &mat = onDevice.materials[group.materials[hr.geom_id]];
 
@@ -185,11 +137,11 @@ bool shade(ScreenSample &ss, Ray &ray, unsigned worldID,
       }
       color = getColor(mat, onDevice.samplers, attribs, hr.prim_id);
 
-      result.albedo = color.xyz();
     }
 
     result.Ng = gn;
     result.Ns = sn;
+    result.albedo = color.xyz();
 
     // Compute motion vector; assume for now the hit was diffuse!
     recti viewport{0,0,(int)ss.frameSize.x,(int)ss.frameSize.y};
@@ -199,129 +151,83 @@ bool shade(ScreenSample &ss, Ray &ray, unsigned worldID,
 
     result.motionVec = float4(prevWP.xy() - currWP.xy(), 0.f, 1.f);
 
-    int instID = hitRec.volumeHit ? hrv.instID : hr.inst_id;
-    const dco::Instance &inst = onDevice.instances[instID];
-    const dco::Group &group = onDevice.groups[inst.groupID];
-    light_sample<float> ls;
-    vec3f intensity(0.f);
-    float dist = 1.f;
-    ls.pdf = 0.f;
+    LightSample ls;
+    memset(&ls, 0, sizeof(ls));
 
     if (world.numLights > 0) {
       int lightID = uniformSampleOneLight(ss.random, world.numLights);
-
       const dco::Light &light = onDevice.lights[world.allLights[lightID]];
-
-      if (light.type == dco::Light::Point) {
-        ls = light.asPoint.sample(hitPos, ss.random);
-        intensity = light.asPoint.intensity(hitPos);
-      } else if (light.type == dco::Light::Quad) {
-        ls = light.asQuad.sample(hitPos, ss.random);
-        intensity = light.asQuad.intensity(hitPos);
-      } else if (light.type == dco::Light::Directional) {
-        ls = light.asDirectional.sample(hitPos, ss.random);
-        intensity = light.asDirectional.intensity(hitPos);
-      } else if (light.type == dco::Light::HDRI) {
-        ls = light.asHDRI.sample(hitPos, ss.random);
-        intensity = light.asHDRI.intensity(ls.dir);
-      }
-
-      dist = light.type == dco::Light::Directional||dco::Light::HDRI ? 1.f : ls.dist;
+      ls = sampleLight(light, hitPos, ss.random);
     }
 
-    if (hitRec.volumeHit) {
-      if (rendererState.renderMode == RenderMode::Default) {
+    if (rendererState.renderMode == RenderMode::Default) {
+      auto safe_rcp = [](float f) { return f > 0.f ? 1.f/f : 0.f; };
+      if (hitRec.volumeHit) {
         if (rendererState.gradientShading && length(gn) > 1e-10f) {
           dco::Material mat;
           mat.type = dco::Material::Matte;
           mat.asMatte.color.rgb = hrv.albedo;
-          dco::Geometry dummyGeom;
 
-          if (ls.pdf > 0.f) {
-            shadedColor = evalMaterial(mat,
-                                       onDevice.samplers, // not used..
-                                       nullptr, // attribs, not used..
-                                       UINT_MAX, // primID, not used..
-                                       gn, gn,
-                                       viewDir, ls.dir,
-                                       intensity);
-            shadedColor = shadedColor / ls.pdf / (dist*dist);
-          }
-        }
-        else
-          shadedColor = hrv.albedo * intensity / ls.pdf / (dist*dist);
-      } else if (rendererState.renderMode == RenderMode::Ng) {
-        shadedColor = gn;
-      } else if (rendererState.renderMode == RenderMode::Ns) {
-        shadedColor = sn;
-      } else if (rendererState.renderMode == RenderMode::Albedo) {
-        shadedColor = hrv.albedo;
-      } else if (rendererState.renderMode == RenderMode::MotionVec) {
-        vec2 xy = normalize(result.motionVec.xy());
-        float angle = (1.f+ sinf(xy.x)) *.5f;
-        float mag = 1.f;//length(result.motionVec.xy());
-        vec3 hsv(angle,1.f,mag);
-        shadedColor = hsv2rgb(hsv);
-      }
-
-      baseColor = hrv.albedo;
-    } else {
-      // That doesn't work for instances..
-      const auto &inst = onDevice.instances[hr.inst_id];
-      const auto &group = onDevice.groups[inst.groupID];
-      const auto &geom = onDevice.geometries[group.geoms[hr.geom_id]];
-      const auto &mat = onDevice.materials[group.materials[hr.geom_id]];
-      if (rendererState.renderMode == RenderMode::Default) {
-        if (ls.pdf > 0.f) {
           shadedColor = evalMaterial(mat,
-                                     onDevice.samplers,
-                                     attribs,
-                                     hr.prim_id,
-                                     gn, sn,
+                                     onDevice.samplers, // not used..
+                                     nullptr, // attribs, not used..
+                                     UINT_MAX, // primID, not used..
+                                     gn, gn,
                                      viewDir,
                                      ls.dir,
-                                     intensity);
-          shadedColor = shadedColor / ls.pdf / (dist*dist);
+                                     ls.intensity);
+          shadedColor = shadedColor * safe_rcp(ls.pdf) * safe_rcp(1.f/ls.dist2);
         }
-      }
-      else if (rendererState.renderMode == RenderMode::Ng)
-        shadedColor = (gn + float3(1.f)) * float3(0.5f);
-      else if (rendererState.renderMode == RenderMode::Ns)
-        shadedColor = (sn + float3(1.f)) * float3(0.5f);
-      else if (rendererState.renderMode == RenderMode::Tangent)
-        shadedColor = tng;
-      else if (rendererState.renderMode == RenderMode::Bitangent)
-        shadedColor = btng;
-      else if (rendererState.renderMode == RenderMode::Albedo)
-        shadedColor = color.xyz();
-      else if (rendererState.renderMode == RenderMode::MotionVec) {
-        vec2 xy = result.motionVec.xy();
-        //xy.x /= float(ss.frameSize.x);
-        //xy.y /= float(ss.frameSize.y);
-        float x = xy.x, y = xy.y;
-        vec2 plr = length(xy) < 1e-10f ? vec2(0.f) : vec2(sqrt(x * x + y * y),atan(y / x));
-        //float angle = length(xy) < 1e-8f ? 0 : acos(dot(xy, vec2(1,0))/length(xy)) * visionaray::constants::radians_to_degrees<float>();
-        //float angle = (plr.y+M_PI*.5f) * visionaray::constants::radians_to_degrees<float>();
-        float angle = 180+plr.y * visionaray::constants::radians_to_degrees<float>();
-        float mag = plr.x;
-        vec3 hsv(angle,1.f,mag);
-        shadedColor = hsv2rgb(hsv);
-      } else if (rendererState.renderMode == RenderMode::GeometryAttribute0)
-        shadedColor = attribs[(int)dco::Attribute::_0].xyz();
-      else if (rendererState.renderMode == RenderMode::GeometryAttribute1)
-        shadedColor = attribs[(int)dco::Attribute::_1].xyz();
-      else if (rendererState.renderMode == RenderMode::GeometryAttribute2)
-        shadedColor = attribs[(int)dco::Attribute::_2].xyz();
-      else if (rendererState.renderMode == RenderMode::GeometryAttribute3)
-        shadedColor = attribs[(int)dco::Attribute::_3].xyz();
-      else if (rendererState.renderMode == RenderMode::GeometryColor)
-        shadedColor = attribs[(int)dco::Attribute::Color].xyz();
+        else
+          shadedColor = hrv.albedo * ls.intensity * safe_rcp(ls.pdf) * safe_rcp(1.f/ls.dist2);
+      } else {
+        const auto &geom = onDevice.geometries[group.geoms[hr.geom_id]];
+        const auto &mat = onDevice.materials[group.materials[hr.geom_id]];
 
-      if (rendererState.renderMode == RenderMode::Default)
-        baseColor = color.xyz();
-      else
-        baseColor = shadedColor;
+        shadedColor = evalMaterial(mat,
+                                   onDevice.samplers,
+                                   attribs,
+                                   hr.prim_id,
+                                   gn, sn,
+                                   viewDir,
+                                   ls.dir,
+                                   ls.intensity);
+        shadedColor = shadedColor * safe_rcp(ls.pdf) * safe_rcp(1.f/ls.dist2);
+      }
     }
+    else if (rendererState.renderMode == RenderMode::Ng)
+      shadedColor = (gn + float3(1.f)) * float3(0.5f);
+    else if (rendererState.renderMode == RenderMode::Ns)
+      shadedColor = (sn + float3(1.f)) * float3(0.5f);
+    else if (rendererState.renderMode == RenderMode::Tangent)
+      shadedColor = tng;
+    else if (rendererState.renderMode == RenderMode::Bitangent)
+      shadedColor = btng;
+    else if (rendererState.renderMode == RenderMode::Albedo)
+      shadedColor = color.xyz();
+    else if (rendererState.renderMode == RenderMode::MotionVec) {
+      vec2 xy = result.motionVec.xy();
+      float x = xy.x, y = xy.y;
+      vec2 plr = length(xy) < 1e-10f ? vec2(0.f) : vec2(sqrt(x * x + y * y),atan(y / x));
+      float angle = 180+plr.y * visionaray::constants::radians_to_degrees<float>();
+      float mag = plr.x;
+      vec3 hsv(angle,1.f,mag);
+      shadedColor = hsv2rgb(hsv);
+    } else if (rendererState.renderMode == RenderMode::GeometryAttribute0)
+      shadedColor = attribs[(int)dco::Attribute::_0].xyz();
+    else if (rendererState.renderMode == RenderMode::GeometryAttribute1)
+      shadedColor = attribs[(int)dco::Attribute::_1].xyz();
+    else if (rendererState.renderMode == RenderMode::GeometryAttribute2)
+      shadedColor = attribs[(int)dco::Attribute::_2].xyz();
+    else if (rendererState.renderMode == RenderMode::GeometryAttribute3)
+      shadedColor = attribs[(int)dco::Attribute::_3].xyz();
+    else if (rendererState.renderMode == RenderMode::GeometryColor)
+      shadedColor = attribs[(int)dco::Attribute::Color].xyz();
+
+    if (rendererState.renderMode == RenderMode::Default)
+      baseColor = color.xyz();
+    else
+      baseColor = shadedColor;
 
     // Convert primary to shadow ray
     ray.ori = hitPos + sn * eps;
@@ -349,12 +255,12 @@ void VisionarayRendererDirectLight::renderFrame(const dco::Frame &frame,
                                                 const dco::Camera &cam,
                                                 uint2 size,
                                                 VisionarayGlobalState *state,
-                                                const VisionarayGlobalState::DeviceObjectRegistry &DD,
+                                                const DeviceObjectRegistry &DD,
                                                 const RendererState &rendererState,
                                                 unsigned worldID, int frameID)
 {
 #ifdef WITH_CUDA
-  VisionarayGlobalState::DeviceObjectRegistry *onDevicePtr;
+  DeviceObjectRegistry *onDevicePtr;
   CUDA_SAFE_CALL(cudaMalloc(&onDevicePtr, sizeof(DD)));
   CUDA_SAFE_CALL(cudaMemcpy(onDevicePtr, &DD, sizeof(DD), cudaMemcpyHostToDevice));
 
@@ -371,7 +277,7 @@ void VisionarayRendererDirectLight::renderFrame(const dco::Frame &frame,
 
   cuda::for_each(0, size.x, 0, size.y,
 #elif defined(WITH_HIP)
-  VisionarayGlobalState::DeviceObjectRegistry *onDevicePtr;
+  DeviceObjectRegistry *onDevicePtr;
   HIP_SAFE_CALL(hipMalloc(&onDevicePtr, sizeof(DD)));
   HIP_SAFE_CALL(hipMemcpy(onDevicePtr, &DD, sizeof(DD), hipMemcpyHostToDevice));
 
@@ -395,7 +301,7 @@ void VisionarayRendererDirectLight::renderFrame(const dco::Frame &frame,
 #endif
       [=] VSNRAY_GPU_FUNC (int x, int y) {
 
-        const VisionarayGlobalState::DeviceObjectRegistry &onDevice = *onDevicePtr;
+        const DeviceObjectRegistry &onDevice = *onDevicePtr;
         const auto &rendererState = *rendererStatePtr;
         const auto &frame = *framePtr;
 

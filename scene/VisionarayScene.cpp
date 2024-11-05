@@ -15,9 +15,9 @@ VisionaraySceneImpl::VisionaraySceneImpl(
 
   if (type == World) {
     m_worldID = deviceState()->dcos.TLSs.alloc({});
-    deviceState()->dcos.worlds.alloc(dco::World{});
+    deviceState()->dcos.worlds.alloc(dco::createWorld());
   }
-  m_groupID = deviceState()->dcos.groups.alloc(dco::Group{});
+  m_groupID = deviceState()->dcos.groups.alloc(dco::createGroup());
 }
 
 VisionaraySceneImpl::~VisionaraySceneImpl()
@@ -41,14 +41,17 @@ void VisionaraySceneImpl::commit()
       if (!dco::validHandle(instID)) continue;
 
       const dco::Instance &inst = deviceState()->dcos.instances[instID];
+      if (inst.theBVH.num_nodes() == 0) continue;
 
       m_worldBLSs.alloc(inst);
     }
 
     // Build TLS
-    lbvh_builder tlsBuilder;
-    m_worldTLS = tlsBuilder.build(
-        WorldTLS{}, m_worldBLSs.hostPtr(), m_worldBLSs.size());
+    if (!m_worldBLSs.empty()) {
+      lbvh_builder tlsBuilder;
+      m_worldTLS = tlsBuilder.build(
+          WorldTLS{}, m_worldBLSs.hostPtr(), m_worldBLSs.size());
+    }
 
     // Build flat list of lights
     m_allLights.clear();
@@ -83,7 +86,6 @@ void VisionaraySceneImpl::commit()
       if (!dco::validHandle(geomID)) continue;
 
       const dco::Geometry &geom = deviceState()->dcos.geometries[geomID];
-      if (!geom.isValid()) continue;
 
       switch (geom.type) {
         case dco::Geometry::Triangle:
@@ -133,7 +135,6 @@ void VisionaraySceneImpl::commit()
       if (!dco::validHandle(geomID)) continue;
 
       const dco::Geometry &geom = deviceState()->dcos.geometries[geomID];
-      if (!geom.isValid()) continue;
 
       binned_sah_builder builder;
 
@@ -196,7 +197,6 @@ void VisionaraySceneImpl::commit()
       if (!dco::validHandle(geomID)) continue;
 
       const dco::Geometry &geom = deviceState()->dcos.geometries[geomID];
-      if (!geom.isValid()) continue;
 
       dco::BLS bls;
       bls.blsID = m_BLSs.alloc(bls);
@@ -247,8 +247,10 @@ void VisionaraySceneImpl::commit()
     }
 
     // Build TLS
-    lbvh_builder tlsBuilder;
-    m_TLS = tlsBuilder.build(TLS{}, m_BLSs.hostPtr(), m_BLSs.size());
+    if (!m_BLSs.empty()) {
+      lbvh_builder tlsBuilder;
+      m_TLS = tlsBuilder.build(TLS{}, m_BLSs.hostPtr(), m_BLSs.size());
+    }
   }
 #endif
 
@@ -319,6 +321,10 @@ void VisionaraySceneImpl::attachGeometry(
 #if defined(WITH_CUDA) || defined(WITH_HIP)
   m_gpuScene->attachGeometry(geom, geomID, userID);
 #else
+
+  if (geom.primitives.len == 0)
+    return;
+
   m_geometries.set(geomID, geom.geomID);
   m_objIds.set(geomID, userID);
 
@@ -426,7 +432,7 @@ void VisionaraySceneImpl::dispatch()
   if (type == World) {
     m_state->dcos.TLSs.update(m_worldID, m_worldTLS.ref());
 
-    dco::World world; // TODO: move TLS and EPS in here!
+    dco::World world = dco::createWorld(); // TODO: move TLS and EPS in here!
     world.numLights = m_allLights.size();
     world.allLights = m_allLights.devicePtr();
     m_state->dcos.worlds.update(m_worldID, world);
@@ -434,7 +440,7 @@ void VisionaraySceneImpl::dispatch()
 
   // Dispatch group
   if (type == Group) {
-    dco::Group group;
+    dco::Group group = dco::createGroup();
     group.groupID = m_groupID;
     group.numBLSs = m_BLSs.size();
     group.BLSs = m_BLSs.devicePtr();

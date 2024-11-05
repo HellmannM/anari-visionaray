@@ -16,6 +16,7 @@ void UnstructuredField::commit()
   m_params.vertexData = getParamObject<Array1D>("vertex.data");
   m_params.index = getParamObject<Array1D>("index");
   m_params.cellIndex = getParamObject<Array1D>("cell.index");
+  m_params.cellType = getParamObject<Array1D>("cell.type");
 
   if (!m_params.vertexPosition) {
     reportMessage(ANARI_SEVERITY_WARNING,
@@ -35,10 +36,15 @@ void UnstructuredField::commit()
     return;
   }
 
-  if (!m_params.cellIndex) {
+  if (!m_params.cellIndex && !m_params.cellType) {
     reportMessage(ANARI_SEVERITY_WARNING,
-        "missing required parameter 'cell.index' on unstructured spatial field");
+        "missing required parameter(s) 'cell.index' and 'cell.type' on unstructured spatial field");
     return;
+  }
+
+  if (m_params.cellIndex && !m_params.cellType) {
+    reportMessage(ANARI_SEVERITY_WARNING,
+        "no 'cell.type' specified on unstructured spatial field; trying to guess from 'cell.index'");
   }
 
   // TODO: check data type/index type validity!
@@ -48,7 +54,8 @@ void UnstructuredField::commit()
 
   size_t numVerts = m_params.vertexPosition->size();
   size_t numIndices = m_params.index->size();
-  size_t numCells = m_params.cellIndex->size();
+  size_t numCells = m_params.cellIndex ? m_params.cellIndex->size()
+                                       : m_params.cellType->size();
 
   m_vertices.resize(numVerts);
   m_indices.resize(numIndices);
@@ -56,26 +63,84 @@ void UnstructuredField::commit()
 
   auto *vertexPosition = m_params.vertexPosition->beginAs<vec3>();
   auto *vertexData = m_params.vertexData->beginAs<float>();
-  auto *index = m_params.index->beginAs<uint64_t>();
-  auto *cellIndex = m_params.cellIndex->beginAs<uint64_t>();
+  auto *cellType = m_params.cellType->beginAs<uint8_t>();
+
+  uint32_t *index32{nullptr};
+  uint64_t *index64{nullptr};
+  if (m_params.index->elementType() == ANARI_UINT32)
+    index32 = (uint32_t *)m_params.index->beginAs<uint32_t>();
+  else if (m_params.index->elementType() == ANARI_UINT64)
+    index64 = (uint64_t *)m_params.index->beginAs<uint64_t>();
+  else {
+    reportMessage(ANARI_SEVERITY_ERROR,
+        "parameter 'index' on unstructured spatial field has wrong element type");
+    return;
+  }
+
+  uint32_t *cellIndex32{nullptr};
+  uint64_t *cellIndex64{nullptr};
+  if (m_params.cellIndex && m_params.cellIndex->elementType() == ANARI_UINT32)
+    cellIndex32 = (uint32_t *)m_params.cellIndex->beginAs<uint32_t>();
+  else if (m_params.cellIndex && m_params.cellIndex->elementType() == ANARI_UINT64)
+    cellIndex64 = (uint64_t *)m_params.cellIndex->beginAs<uint64_t>();
+
+  // try to guess how to interpret the cell type, as this is
+  // not properly specified yet:
+
+  auto indexCount = [this](uint8_t val) {
+    // Banari: 0,1,2,3
+    // VTK: 10,12,13,14
+    if (val == 0 || val == 10) return 4ull; // TET
+    if (val == 1 || val == 12) return 8ull; // HEX
+    if (val == 2 || val == 13) return 6ull; // WEDGE
+    if (val == 3 || val == 14) return 5ull; // PYR
+    else {
+      reportMessage(ANARI_SEVERITY_WARNING,
+        "unknown value for 'cell.type' found, returning 0 for index count");
+      return ~0ull;
+    }
+  };
 
   for (size_t i=0; i<m_vertices.size(); ++i) {
     m_vertices[i] = float4(vertexPosition[i],vertexData[i]);
   }
 
   for (size_t i=0; i<m_indices.size(); ++i) {
-    m_indices[i] = index[i];
+    m_indices[i] = index64 ? index64[i] : uint64_t(index32[i]);
   }
 
+  uint64_t currentIndex=0;
+  float minCellDiagonal=FLT_MAX;
   for (size_t cellID=0; cellID<m_elements.size(); ++cellID) {
-    uint64_t firstIndex = cellIndex[cellID];
-    uint64_t lastIndex = cellID < numCells-1 ? cellIndex[cellID+1] : numIndices;
+    uint64_t firstIndex, lastIndex;
+
+    if (cellIndex32) {
+      firstIndex = cellIndex32[cellID];
+      lastIndex = cellID < numCells-1 ? cellIndex32[cellID+1] : numIndices;
+    } if (cellIndex64) {
+      firstIndex = cellIndex64[cellID];
+      lastIndex = cellID < numCells-1 ? cellIndex64[cellID+1] : numIndices;
+    } else /*if (cellType) */ {
+      auto ic = indexCount(cellType[cellID]);
+      firstIndex = currentIndex;
+      lastIndex = currentIndex + ic;
+      currentIndex += ic;
+    }
 
     m_elements[cellID].begin = firstIndex;
     m_elements[cellID].end = lastIndex;
     m_elements[cellID].elemID = cellID;
     m_elements[cellID].vertexBuffer = m_vertices.devicePtr();
     m_elements[cellID].indexBuffer = m_indices.devicePtr();
+
+    // compute cellBounds; the minimum size will determine the
+    // step size used for (ISO) gradient shading:
+    box3f cellBounds{vec3{FLT_MAX}, vec3{-FLT_MAX}};
+    for (uint64_t i=firstIndex; i<lastIndex; ++i) {
+      const vec4f V = m_vertices.hostPtr()[m_indices.hostPtr()[i]];
+      cellBounds.extend(V.xyz());
+    }
+    minCellDiagonal = fminf(minCellDiagonal,length(cellBounds.max-cellBounds.min));
   }
 
   // voxel grid extensions for AMR "stitching"
@@ -146,7 +211,7 @@ void UnstructuredField::commit()
 #endif
 
   vfield.voxelSpaceTransform = mat4x3(mat3::identity(),vec3f(0.f));
-  setStepSize(length(bounds().max-bounds().min)/50.f);
+  setGradientDelta(minCellDiagonal);
 
   buildGrid();
 
@@ -182,7 +247,8 @@ aabb UnstructuredField::bounds() const
 __global__ void UnstructuredField_buildGridGPU(dco::GridAccel    vaccel,
                                                const vec4f      *vertices,
                                                const dco::UElem *elements,
-                                               size_t            numElems)
+                                               size_t            numElems,
+                                               float             delta)
 {
   size_t cellID = blockIdx.x * size_t(blockDim.x) + threadIdx.x;
 
@@ -212,6 +278,11 @@ __global__ void UnstructuredField_buildGridGPU(dco::GridAccel    vaccel,
       for (int mcx=loMC.x; mcx<=upMC.x; ++mcx) {
         const vec3i mcID(mcx,mcy,mcz);
         updateMC(mcID,vaccel.dims,valueRange,vaccel.valueRanges);
+        // TODO: this causes artifacts, should probably do this in
+        // a macrocell neighborhood:
+        //updateMCStepSize(
+        //    mcID,vaccel.dims,length(cellBounds.max-cellBounds.min),vaccel.stepSizes);
+        updateMCStepSize(mcID,vaccel.dims,delta,vaccel.stepSizes);
       }
     }
   }
@@ -230,7 +301,7 @@ void UnstructuredField::buildGrid()
   size_t numThreads = 1024;
   size_t numElems = m_elements.size();
   UnstructuredField_buildGridGPU<<<div_up(numElems, numThreads), numThreads>>>(
-    vaccel, m_vertices.devicePtr(), m_elements.devicePtr(), numElems);
+    vaccel, m_vertices.devicePtr(), m_elements.devicePtr(), numElems, vfield.delta);
 #else
   int3 dims{64, 64, 64};
   box3f worldBounds = {bounds().min,bounds().max};
@@ -275,6 +346,12 @@ void UnstructuredField::buildGrid()
         for (int mcx=loMC.x; mcx<=upMC.x; ++mcx) {
           const vec3i mcID(mcx,mcy,mcz);
           updateMC(mcID,vaccel.dims,valueRange,vaccel.valueRanges);
+          // TODO: this causes artifacts, should probably do this in
+          // a macrocell neighborhood:
+          //updateMCStepSize(
+          //    mcID,vaccel.dims,length(cellBounds.max-cellBounds.min),vaccel.stepSizes);
+          updateMCStepSize(
+              mcID,vaccel.dims,vfield.delta,vaccel.stepSizes);
         }
       }
     }
