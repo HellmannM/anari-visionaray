@@ -88,11 +88,11 @@ void Renderer::commit()
 
 Renderer *Renderer::createInstance(std::string_view subtype, VisionarayGlobalState *s)
 {
-  if (subtype == "direct_light")
+  if (subtype == "direct_light" || subtype == "default")
     return new DirectLight(s);
   else if (subtype == "raycast")
     return new Raycast(s);
-  else if (subtype == "drr" || subtype == "default")
+  else if (subtype == "drr")
     return new DRR(s);
   else
     return {};
