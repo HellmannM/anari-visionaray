@@ -74,7 +74,7 @@ struct RendererState
   // Heat map
   bool heatMapEnabled{false};
   float heatMapScale{.1f};
-
+  float photonEnergy{13500.f};
 };
 
 inline VSNRAY_FUNC

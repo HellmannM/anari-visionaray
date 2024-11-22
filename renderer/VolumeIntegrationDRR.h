@@ -11,8 +11,8 @@ inline float rayMarchVolumeDRR(ScreenSample &ss,
                             Ray ray,
                             const dco::Volume &vol,
                             float3 &color,
-                            float &alpha) {
-  constexpr float photon_energy = 13500.f;
+                            float &alpha,
+                            const float &photon_energy) {
   constexpr float depth_accum_dist_mm = 5.f;
   constexpr float min_contribution = 0.6f;
   constexpr float min_intensity = 0.5f;

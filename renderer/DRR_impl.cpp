@@ -22,7 +22,7 @@ inline PixelSample renderSample(ScreenSample &ss, Ray ray, unsigned worldID,
     float3 color(0.f);
     float alpha = 0.f;
 
-    result.depth = rayMarchVolumeDRR(ss, ray, vol, color, alpha);
+    result.depth = rayMarchVolumeDRR(ss, ray, vol, color, alpha, rendererState.photonEnergy);
     result.color = over(float4(color,alpha), result.color);
     result.Ng = float3{}; // TODO: gradient
     result.Ns = float3{}; // TODO..

@@ -138,6 +138,17 @@
           "description": "TAA weighting factor"
         },
         {
+          "name": "photonEnergy",
+          "types": [
+            "ANARI_FLOAT32"
+          ],
+          "tags": [],
+          "default": 100000.0,
+          "minimum": 0.0,
+          "maximum": 1000000.0,
+          "description": "Photon energy (tube potential) [eV]"
+        },
+        {
           "name": "pixelSamples",
           "types": [
             "ANARI_INT32"
