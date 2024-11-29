@@ -23,13 +23,13 @@ inline PixelSample renderSample(ScreenSample &ss, Ray ray, unsigned worldID,
     float alpha = 0.f;
 
     result.depth = rayMarchVolumeDRR(ss, ray, vol, color, alpha, rendererState.photonEnergy);
+    result.depth3D = ray.ori + result.depth * ray.dir;
     result.color = over(float4(color,alpha), result.color);
     result.Ng = float3{}; // TODO: gradient
     result.Ns = float3{}; // TODO..
     result.albedo = float3{}; // TODO..
     result.objId = group.objIds[hrv.volID];
     result.instId = inst.userID;
-    auto point = ray.ori + result.depth * ray.dir; //TODO store this point instead of depth
   }
 
   return result;

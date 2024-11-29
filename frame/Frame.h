@@ -43,6 +43,7 @@ struct Frame : public helium::BaseFrame
 
   void *mapColorBuffer();
   void *mapDepthBuffer();
+  void *mapDepth3DBuffer();
 
   bool ready() const;
   void wait() const;
@@ -77,6 +78,7 @@ struct Frame : public helium::BaseFrame
 
   HostDeviceArray<uint8_t> m_pixelBuffer;
   HostDeviceArray<float> m_depthBuffer;
+  HostDeviceArray<float3> m_depth3DBuffer;
   HostDeviceArray<float3> m_normalBuffer;
   HostDeviceArray<float3> m_albedoBuffer;
   HostDeviceArray<float4> m_motionVecBuffer;

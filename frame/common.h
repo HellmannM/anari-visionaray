@@ -13,6 +13,7 @@ struct PixelSample
 {
   float4 color;
   float depth;
+  float3 depth3D;
   float3 Ng;
   float3 Ns;
   float3 albedo;

@@ -102,6 +102,7 @@ void Frame::commit()
 
   vframe.colorType = getParam<anari::DataType>("channel.color", ANARI_UNKNOWN);
   vframe.depthType = getParam<anari::DataType>("channel.depth", ANARI_UNKNOWN);
+  vframe.depth3DType = getParam<anari::DataType>("channel.depth3D", ANARI_UNKNOWN);
   vframe.normalType = getParam<anari::DataType>("channel.normal", ANARI_UNKNOWN);
   vframe.albedoType = getParam<anari::DataType>("channel.albedo", ANARI_UNKNOWN);
   vframe.primIdType =
@@ -120,6 +121,7 @@ void Frame::commit()
   m_pixelBuffer.resize(numPixels * vframe.perPixelBytes);
 
   m_depthBuffer.resize(vframe.depthType == ANARI_FLOAT32 ? numPixels : 0);
+  m_depth3DBuffer.resize(numPixels, vec3{0.f});
   m_accumBuffer.resize(numPixels, vec4{0.f});
   m_motionVecBuffer.resize(numPixels, vec4{0,0,0,1});
   m_frameChanged = true;
@@ -143,6 +145,7 @@ void Frame::commit()
 
   vframe.pixelBuffer = m_pixelBuffer.devicePtr();
   vframe.depthBuffer = m_depthBuffer.devicePtr();
+  vframe.depth3DBuffer = m_depth3DBuffer.devicePtr();
   vframe.normalBuffer = m_normalBuffer.devicePtr();
   vframe.albedoBuffer = m_albedoBuffer.devicePtr();
   vframe.primIdBuffer = m_primIdBuffer.devicePtr();
@@ -259,6 +262,9 @@ void Frame::renderFrame()
         if (frame.depthBuffer) {
           frame.depthBuffer[x+size.x*y] = 1e31f;
         }
+        if (frame.depth3DBuffer) {
+          frame.depth3DBuffer[x+size.x*y] = vec3{0.f};
+        }
       });
 #elif WITH_HIP
       hip::for_each(0, size.x, 0, size.y, [=] VSNRAY_GPU_FUNC (int x, int y) {
@@ -266,11 +272,17 @@ void Frame::renderFrame()
         if (frame.depthBuffer) {
           frame.depthBuffer[x+size.x*y] = 1e31f;
         }
+        if (frame.depth3DBuffer) {
+          frame.depth3DBuffer[x+size.x*y] = vec3{0.f};
+        }
       });
 #else
       std::fill(frame.accumBuffer, frame.accumBuffer + size.x * size.y, vec4{0.f});
       if (frame.depthBuffer) {
         std::fill(frame.depthBuffer, frame.depthBuffer + size.x * size.y, 1e31f);
+      }
+      if (frame.depth3DBuffer) {
+        std::fill(frame.depth3DBuffer, frame.depth3DBuffer + size.x * size.y, vec3{0.f});
       }
 #endif
       rend.rendererState.accumID = 0;
@@ -379,6 +391,12 @@ void *Frame::map(std::string_view channel,
   } if (channel == "channel.depthCUDA" || channel == "channel.depthGPU") {
     *pixelType = vframe.colorType;
     return mapHostDeviceArray(m_depthBuffer, true);
+  } else if (channel == "depth3D" || channel == "channel.depth3D") {
+    *pixelType = ANARI_FLOAT32_VEC3;
+    return mapDepth3DBuffer();
+  } if (channel == "channel.depth3DCUDA" || channel == "channel.depth3DGPU") {
+    *pixelType = ANARI_FLOAT32_VEC3;
+    return mapHostDeviceArray(m_depth3DBuffer, true);
   } else if (channel == "channel.normal" && !m_normalBuffer.empty()) {
     *pixelType = ANARI_FLOAT32_VEC3;
     return mapHostDeviceArray(m_normalBuffer);
@@ -430,6 +448,11 @@ void *Frame::mapColorBuffer()
 void *Frame::mapDepthBuffer()
 {
   return mapHostDeviceArray(m_depthBuffer);
+}
+
+void *Frame::mapDepth3DBuffer()
+{
+  return mapHostDeviceArray(m_depth3DBuffer);
 }
 
 bool Frame::ready() const
@@ -534,6 +557,7 @@ void Frame::mapBuffersOnDevice()
 {
   vframe.pixelBuffer  = (uint8_t *)m_pixelBuffer.mapDevice();
   vframe.depthBuffer  = (float *)m_depthBuffer.mapDevice();
+  vframe.depth3DBuffer= (float3 *)m_depth3DBuffer.mapDevice();
   vframe.normalBuffer = (float3 *)m_normalBuffer.mapDevice();
   vframe.albedoBuffer = (float3 *)m_albedoBuffer.mapDevice();
   vframe.primIdBuffer = (uint32_t *)m_primIdBuffer.mapDevice();
