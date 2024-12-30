@@ -5,12 +5,18 @@
 namespace visionaray {
 
 VSNRAY_FUNC
-inline PixelSample renderSample(ScreenSample &ss, Ray ray, unsigned worldID,
-    const DeviceObjectRegistry &onDevice, const RendererState &rendererState)
+inline PixelSample renderSample(ScreenSample &ss,
+                                Ray ray,
+                                unsigned worldID,
+                                const DeviceObjectRegistry &onDevice,
+                                const RendererState &rendererState)
 {
   PixelSample result;
   result.color = rendererState.bgColor;
   result.depth = 1e31f;
+
+  if (onDevice.TLSs[worldID].num_primitives() == 0)
+    return result; // happens eg with TLSs of unsupported objects
 
   auto hrv = intersectVolumeBounds(ray, onDevice.TLSs[worldID]);
 
@@ -36,12 +42,12 @@ inline PixelSample renderSample(ScreenSample &ss, Ray ray, unsigned worldID,
 }
 
 void VisionarayRendererDRR::renderFrame(const dco::Frame &frame,
-                                            const dco::Camera &cam,
-                                            uint2 size,
-                                            VisionarayGlobalState *state,
-                                            const DeviceObjectRegistry &DD,
-                                            const RendererState &rendererState,
-                                            unsigned worldID, int frameID)
+                                        const dco::Camera &cam,
+                                        uint2 size,
+                                        VisionarayGlobalState *state,
+                                        const DeviceObjectRegistry &DD,
+                                        const RendererState &rendererState,
+                                        unsigned worldID, int frameID)
 {
 #ifdef WITH_CUDA
   DeviceObjectRegistry *onDevicePtr;
