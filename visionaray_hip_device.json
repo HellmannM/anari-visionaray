@@ -63,6 +63,34 @@
             1.0
           ],
           "description": "background color and alpha (RGBA)"
+        }
+      ]
+    },
+    {
+      "type": "ANARI_RENDERER",
+      "name": "direct_light",
+      "parameters": [
+        {
+          "name": "name",
+          "types": [
+            "ANARI_STRING"
+          ],
+          "tags": [],
+          "description": "optional object name"
+        },
+        {
+          "name": "background",
+          "types": [
+            "ANARI_FLOAT32_VEC4"
+          ],
+          "tags": [],
+          "default": [
+            1.0,
+            1.0,
+            1.0,
+            1.0
+          ],
+          "description": "background color and alpha (RGBA)"
         },
         {
           "name": "mode",
@@ -245,34 +273,6 @@
           "tags": [],
           "default": 0.1,
           "description": "heat map scaling factor"
-        }
-      ]
-    },
-    {
-      "type": "ANARI_RENDERER",
-      "name": "drr",
-      "parameters": [
-        {
-          "name": "name",
-          "types": [
-            "ANARI_STRING"
-          ],
-          "tags": [],
-          "description": "optional object name"
-        },
-        {
-          "name": "background",
-          "types": [
-            "ANARI_FLOAT32_VEC4"
-          ],
-          "tags": [],
-          "default": [
-            1.0,
-            1.0,
-            1.0,
-            1.0
-          ],
-          "description": "background color and alpha (RGBA)"
         }
       ]
     }
