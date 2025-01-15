@@ -2077,7 +2077,7 @@ struct Frame
 
   anari::DataType colorType;
   anari::DataType depthType;
-  anari::DataType depth3DType;
+  anari::DataType originType;
   anari::DataType normalType;
   anari::DataType albedoType;
   anari::DataType primIdType;
@@ -2086,7 +2086,7 @@ struct Frame
 
   uint8_t *pixelBuffer;
   float *depthBuffer;
-  float3 *depth3DBuffer;
+  float3 *originBuffer;
   float3 *normalBuffer;
   float3 *albedoBuffer;
   float4 *motionVecBuffer;
@@ -2132,8 +2132,8 @@ struct Frame
 
     if (depthBuffer)
       s.depth = depthBuffer[idx];
-    if (depth3DBuffer)
-      s.depth3D = depth3DBuffer[idx];
+    if (originBuffer)
+      s.origin = originBuffer[idx];
     if (normalBuffer)
       s.Ng = normalBuffer[idx];
     if (motionVecBuffer)
@@ -2223,8 +2223,8 @@ struct Frame
 
     if (depthBuffer)
       depthBuffer[idx] = s.depth;
-    if (depth3DBuffer)
-      depth3DBuffer[idx] = s.depth3D;
+    if (originBuffer)
+      originBuffer[idx] = s.origin;
     if (normalBuffer)
       normalBuffer[idx] = s.Ng;
     if (albedoBuffer)
@@ -2253,7 +2253,7 @@ inline Frame createFrame()
   frame.perPixelBytes = 1;
   frame.colorType = ANARI_UNKNOWN;
   frame.depthType = ANARI_UNKNOWN;
-  frame.depth3DType = ANARI_UNKNOWN;
+  frame.originType = ANARI_UNKNOWN;
   frame.normalType = ANARI_UNKNOWN;
   frame.albedoType = ANARI_UNKNOWN;
   frame.primIdType = ANARI_UNKNOWN;

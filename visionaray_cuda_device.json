@@ -276,6 +276,22 @@
           "description": "heat map scaling factor"
         }
       ]
+    },
+    {
+      "type" : "ANARI_FRAME",
+      "description" : "frame object",
+      "parameters" : [
+        {
+          "name" : "channel.origin",
+          "types" : ["ANARI_DATA_TYPE"],
+          "tags" : [],
+          "values" : ["ANARI_FLOAT32_VEC3"],
+            "description" : "enables mapping the origin channel as the type specified"
+        }
+      ],
+      "channel" : [
+          "channel.origin"
+      ]
     }
   ]
 }
