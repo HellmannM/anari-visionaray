@@ -13,7 +13,7 @@ inline float rayMarchVolumeDRR(ScreenSample &ss,
                             float3 &color,
                             float &alpha,
                             const float &photon_energy) {
-  constexpr float depth_accum_dist_mm = 5.f;
+  constexpr float depth_accum_dist_mm = 10.f;
   constexpr float min_contribution = 0.6f;
   constexpr float min_intensity = 0.5f;
 
@@ -64,8 +64,8 @@ inline float rayMarchVolumeDRR(ScreenSample &ss,
   // get depth
   if (color.x < min_intensity)
     return 0.f;
-  const float start = max(t_at_v_max - depth_accum_dist_mm * dt_scale / 2.f, boxHit.tnear);
-  const float end   = min(t_at_v_max + depth_accum_dist_mm * dt_scale / 2.f, boxHit.tfar);
+  const float start = max(t_at_v_max - depth_accum_dist_mm * dt_scale / 2.f, ray.tmin);
+  const float end   = min(t_at_v_max + depth_accum_dist_mm * dt_scale / 2.f, ray.tmax);
   auto t2 = start;
   float section_lac_accumulated = 0.f;
   size_t section_steps = 0;
