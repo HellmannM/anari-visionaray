@@ -120,11 +120,8 @@ void Frame::commit()
   vframe.perPixelBytes = 4 * (vframe.colorType == ANARI_FLOAT32_VEC4 ? 4 : 1);
   m_pixelBuffer.resize(numPixels * vframe.perPixelBytes);
 
-  //TODO depthType, originType not set?!
-  //m_depthBuffer.resize(vframe.depthType == ANARI_FLOAT32 ? numPixels : 0);
-  //m_originBuffer.resize(vframe.originType == ANARI_FLOAT32_VEC3 ? numPixels : 0, vec3{0.f});
-  m_depthBuffer.resize(numPixels);
-  m_originBuffer.resize(numPixels, vec3{0.f});
+  m_depthBuffer.resize(vframe.depthType == ANARI_FLOAT32 ? numPixels : 0);
+  m_originBuffer.resize(vframe.originType == ANARI_FLOAT32_VEC3 ? numPixels : 0, vec3{0.f});
   m_accumBuffer.resize(numPixels, vec4{0.f});
   m_motionVecBuffer.resize(numPixels, vec4{0,0,0,1});
   m_frameChanged = true;
