@@ -30,7 +30,7 @@ inline PixelSample renderSample(ScreenSample &ss,
 
     result.depth = rayMarchVolumeDRR(ss, ray, vol, color, alpha, rendererState.photonEnergy);
     // magic numbers: low contribution pixels will keep depth (-FLT_MAX,-FLT_MAX,-FLT_MAX).
-    if (result.depth != 0.f)
+    if (result.depth != -FLT_MAX)
       result.origin = ray.ori + result.depth * ray.dir;
     result.color = over(float4(color,alpha), result.color);
     result.Ng = float3{}; // TODO: gradient

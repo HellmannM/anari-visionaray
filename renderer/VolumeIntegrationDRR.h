@@ -37,12 +37,11 @@ inline float rayMarchVolumeDRR(ScreenSample &ss,
   dt = dt * dt_scale;
 
   // render
-  float v_max = 0.f;
-  float t_at_v_max = 0.f;
+  float v_max = -FLT_MAX;
+  float t_at_v_max = ray.tmin;
   float lac_accumulated = 0.f;
   size_t steps = 0;
-  float t=ray.tmin;
-  for (; t<ray.tmax; t+=dt) {
+  for (float t=ray.tmin; t<ray.tmax; t+=dt) {
     float3 P = ray.ori + ray.dir * t;
     float v = 0.f;
     if (sampleField(sf, P, v)) {
@@ -63,13 +62,12 @@ inline float rayMarchVolumeDRR(ScreenSample &ss,
 
   // get depth
   if (color.x < min_intensity)
-    return 0.f;
+    return -FLT_MAX;
   const float start = max(t_at_v_max - depth_accum_dist_mm * dt_scale / 2.f, ray.tmin);
   const float end   = min(t_at_v_max + depth_accum_dist_mm * dt_scale / 2.f, ray.tmax);
-  auto t2 = start;
   float section_lac_accumulated = 0.f;
   size_t section_steps = 0;
-  for (; t2<end; t2+=dt) {
+  for (float t2=start; t2<end; t2+=dt) {
     float3 P = ray.ori+ray.dir*t2;
     float v = 0.f;
     if (sampleField(sf, P, v)) {
@@ -79,12 +77,12 @@ inline float rayMarchVolumeDRR(ScreenSample &ss,
   }
   auto section_lac_averaged = section_lac_accumulated / section_steps;
   auto section_dist_cm = (section_steps * dt / dt_scale) / 10.f; //TODO assuming dt is in [mm]
-  section_dist_cm /= 50.f;
+  section_dist_cm /= 20.f; //TODO
   auto section_remaining = pow(photon_energy, -section_dist_cm * section_lac_averaged);
   auto contribution = (1.f - section_remaining) / (1.f - remaining);
   if (contribution >= min_contribution)
     return t_at_v_max / dt_scale;
-  return 0.f;
+  return -FLT_MAX;
 }
 
 } // namespace visionaray
