@@ -6,6 +6,28 @@
 
 namespace visionaray {
 
+template<typename T, size_t numElements>
+struct MovingAccumBuffer
+{
+  VSNRAY_FUNC
+  MovingAccumBuffer()
+    : currentIndex{0}, sum{0.f}, buffer{std::move(std::array<T, numElements>())} {}
+  
+  VSNRAY_FUNC
+  T update(T newValue)
+  {
+    sum = sum - buffer[currentIndex] + newValue;
+    buffer[currentIndex] = newValue;
+    // slow if numElements is not power of 2
+    currentIndex = (currentIndex + 1) % numElements;
+    return sum;
+  }
+
+  size_t currentIndex;
+  T sum;
+  std::array<T, numElements> buffer;
+};
+
 VSNRAY_FUNC
 inline float rayMarchVolumeDRR(ScreenSample &ss,
                             Ray ray,
@@ -13,9 +35,9 @@ inline float rayMarchVolumeDRR(ScreenSample &ss,
                             float3 &color,
                             float &alpha,
                             const float &photon_energy) {
-  constexpr float depth_accum_dist_mm = 10.f;
-  constexpr float min_contribution = 0.6f;
-  constexpr float min_intensity = 0.5f;
+  constexpr size_t accumBufferSize{32};
+  constexpr float min_contribution = 0.4f;
+  constexpr float min_intensity = 0.4f;
 
   float dt = vol.unitDistance;
   auto boxHit = intersect(ray, vol.bounds);
@@ -36,9 +58,11 @@ inline float rayMarchVolumeDRR(ScreenSample &ss,
   ray.tmax = ray.tmax * dt_scale;
   dt = dt * dt_scale;
 
+  MovingAccumBuffer<float, accumBufferSize> accum;
+  float sectionMax{0.f};
+  float tAtSectionMax{-FLT_MAX};
+
   // render
-  float v_max = -FLT_MAX;
-  float t_at_v_max = ray.tmin;
   float lac_accumulated = 0.f;
   size_t steps = 0;
   for (float t=ray.tmin; t<ray.tmax; t+=dt) {
@@ -46,9 +70,10 @@ inline float rayMarchVolumeDRR(ScreenSample &ss,
     float v = 0.f;
     if (sampleField(sf, P, v)) {
       lac_accumulated += v;
-      if (v > v_max) {
-        v_max = v;
-        t_at_v_max = t;
+      auto section = accum.update(v);
+      if (section > sectionMax) {
+        sectionMax = section;
+        tAtSectionMax = t;
       }
       ++steps;
     }
@@ -63,25 +88,9 @@ inline float rayMarchVolumeDRR(ScreenSample &ss,
   // get depth
   if (color.x < min_intensity)
     return -FLT_MAX;
-  const float start = max(t_at_v_max - depth_accum_dist_mm * dt_scale / 2.f, ray.tmin);
-  const float end   = min(t_at_v_max + depth_accum_dist_mm * dt_scale / 2.f, ray.tmax);
-  float section_lac_accumulated = 0.f;
-  size_t section_steps = 0;
-  for (float t2=start; t2<end; t2+=dt) {
-    float3 P = ray.ori+ray.dir*t2;
-    float v = 0.f;
-    if (sampleField(sf, P, v)) {
-      section_lac_accumulated += v;
-      ++section_steps;
-    }
-  }
-  auto section_lac_averaged = section_lac_accumulated / section_steps;
-  auto section_dist_cm = (section_steps * dt / dt_scale) / 10.f; //TODO assuming dt is in [mm]
-  section_dist_cm /= 20.f; //TODO
-  auto section_remaining = pow(photon_energy, -section_dist_cm * section_lac_averaged);
-  auto contribution = (1.f - section_remaining) / (1.f - remaining);
-  if (contribution >= min_contribution)
-    return t_at_v_max / dt_scale;
+  // return center of buffer
+  if ((sectionMax / lac_accumulated) > min_contribution)
+    return (tAtSectionMax - (accumBufferSize / 2.f * dt)) / dt_scale;
   return -FLT_MAX;
 }
 
