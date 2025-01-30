@@ -34,10 +34,12 @@ inline float rayMarchVolumeDRR(ScreenSample &ss,
                             const dco::Volume &vol,
                             float3 &color,
                             float &alpha,
-                            const float &photon_energy) {
+                            float photon_energy) {
   constexpr size_t accumBufferSize{32};
   constexpr float min_contribution = 0.4f;
   constexpr float min_intensity = 0.4f;
+  constexpr float max_intensity = 0.99f;
+  const float cutoff = static_cast<float>(- std::log(1.f - max_intensity) / std::log(photon_energy));
 
   float dt = vol.unitDistance;
   auto boxHit = intersect(ray, vol.bounds);
@@ -70,11 +72,15 @@ inline float rayMarchVolumeDRR(ScreenSample &ss,
     float v = 0.f;
     if (sampleField(sf, P, v)) {
       lac_accumulated += v;
-      auto section = accum.update(v);
+      const auto section = accum.update(v);
       if (section > sectionMax) {
         sectionMax = section;
         tAtSectionMax = t;
       }
+      const auto dist = steps * dt / dt_scale / 10.f / 20.f; // TODO
+      const auto average = lac_accumulated / steps;
+      if (dist * average > cutoff)
+        break;
       ++steps;
     }
   }
@@ -82,7 +88,7 @@ inline float rayMarchVolumeDRR(ScreenSample &ss,
   auto dist_cm = (steps * dt / dt_scale) / 10.f; //TODO assuming dt is in [mm]
   dist_cm /= 20.f; //TODO why is it off?
   auto remaining = pow(photon_energy, -dist_cm * lac_averaged);
-  color = float3(1.f - remaining);
+  color = float3(1.f - std::clamp(remaining, 0.f, 1.f));
   alpha = 1.f;
 
   // get depth
