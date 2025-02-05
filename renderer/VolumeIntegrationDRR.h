@@ -41,7 +41,6 @@ inline float rayMarchVolumeDRR(ScreenSample &ss,
   constexpr float max_intensity = 0.99f;
   const float cutoff = static_cast<float>(- std::log(1.f - max_intensity) / std::log(photon_energy));
 
-  float dt = vol.unitDistance;
   auto boxHit = intersect(ray, vol.bounds);
 
   const auto &sf = vol.field;
@@ -58,7 +57,7 @@ inline float rayMarchVolumeDRR(ScreenSample &ss,
 
   ray.tmin = ray.tmin * dt_scale;
   ray.tmax = ray.tmax * dt_scale;
-  dt = dt * dt_scale;
+  float dt = dt_scale / vol.unitDistance;
 
   MovingAccumBuffer<float, accumBufferSize> accum;
   float sectionMax{0.f};
@@ -77,9 +76,10 @@ inline float rayMarchVolumeDRR(ScreenSample &ss,
         sectionMax = section;
         tAtSectionMax = t;
       }
-      const auto dist = steps * dt / dt_scale / 10.f / 20.f; // TODO
+      auto dist_cm = steps * dt / dt_scale / 10.f;
+      dist_cm /= 20.f; //TODO why is it off?
       const auto average = lac_accumulated / steps;
-      if (dist * average > cutoff)
+      if (dist_cm * average > cutoff)
         break;
       ++steps;
     }
