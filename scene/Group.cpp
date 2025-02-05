@@ -13,13 +13,11 @@ Group::Group(VisionarayGlobalState *s)
   , m_volumeData(this)
   , m_lightData(this)
 {
-  s->objectCounts.groups++;
 }
 
 Group::~Group()
 {
   cleanup();
-  deviceState()->objectCounts.groups--;
 }
 
 bool Group::getProperty(
@@ -47,13 +45,6 @@ void Group::commit()
   m_surfaceData = getParamObject<ObjectArray>("surface");
   m_volumeData = getParamObject<ObjectArray>("volume");
   m_lightData = getParamObject<ObjectArray>("light");
-
-  if (m_volumeData) {
-    std::transform(m_volumeData->handlesBegin(),
-        m_volumeData->handlesEnd(),
-        std::back_inserter(m_volumes),
-        [](auto *o) { return (Volume *)o; });
-  }
 }
 
 const std::vector<Surface *> &Group::surfaces() const
@@ -126,6 +117,7 @@ void Group::visionaraySceneConstruct()
         });
   }
 
+  uint32_t volID = 0;
   if (m_volumeData) {
     std::for_each(m_volumeData->handlesBegin(),
         m_volumeData->handlesEnd(),
@@ -133,7 +125,7 @@ void Group::visionaraySceneConstruct()
           auto *v = (Volume *)o;
           if (v && v->isValid()) {
             m_volumes.push_back(v);
-            vscene->attachVolume(v->visionarayVolume(), id++, v->id());
+            vscene->attachVolume(v->visionarayVolume(), volID++, v->id());
           } else {
             reportMessage(ANARI_SEVERITY_DEBUG,
                 "visionaray::Group rejecting invalid volume(%p) in building BLS",

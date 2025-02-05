@@ -13,6 +13,9 @@ VisionaraySceneImpl::VisionaraySceneImpl(
 {
   this->type = type;
 
+  m_bounds[0].invalidate();
+  m_bounds[1].invalidate();
+
   if (type == World) {
     m_worldID = deviceState()->dcos.TLSs.alloc({});
     deviceState()->dcos.worlds.alloc(dco::createWorld());
@@ -31,6 +34,10 @@ VisionaraySceneImpl::~VisionaraySceneImpl()
 
 void VisionaraySceneImpl::commit()
 {
+  boundsID = !boundsID;
+  m_bounds[boundsID] = m_bounds[!boundsID];
+  m_bounds[!boundsID].invalidate();
+
 #if defined(WITH_CUDA) || defined(WITH_HIP)
   m_gpuScene->commit();
 #else
@@ -137,43 +144,61 @@ void VisionaraySceneImpl::commit()
       const dco::Geometry &geom = deviceState()->dcos.geometries[geomID];
 
       binned_sah_builder builder;
+      bvh_optimizer optimizer;
+      bvh_collapser collapser;
 
       if (geom.type == dco::Geometry::Triangle) {
         unsigned index = triangleCount++;
         builder.enable_spatial_splits(true);
-        m_accelStorage.triangleBLSs[index] = builder.build(
-          TriangleBVH{}, (const dco::Triangle *)geom.primitives.data, geom.primitives.len);
+        auto triangleBVH2 = builder.build(
+          index_bvh<basic_triangle<3,float>>{}, (const dco::Triangle *)geom.primitives.data, geom.primitives.len);
+#if 0 // unintuitively this doesn't make traversal faster, need to investigate:
+        for (;;) {
+          int rotations = optimizer.optimize_tree_rotations(triangleBVH2, deviceState()->threadPool);
+          // float costs = sah_cost(triangleBVH2);
+          // std::cout << "SAH costs of new tree: " << costs << '\n';
+          if (rotations == 0)
+            break;
+        }
+#endif
+        collapser.collapse(triangleBVH2, m_accelStorage.triangleBLSs[index], deviceState()->threadPool);
       } else if (geom.type == dco::Geometry::Quad) {
         unsigned index = quadCount++;
         builder.enable_spatial_splits(true);
-        m_accelStorage.quadBLSs[index] = builder.build(
-          TriangleBVH{}, (const dco::Triangle *)geom.primitives.data, geom.primitives.len);
+        auto quadBVH2 = builder.build(
+          index_bvh<basic_triangle<3,float>>{}, (const dco::Triangle *)geom.primitives.data, geom.primitives.len);
+        collapser.collapse(quadBVH2, m_accelStorage.quadBLSs[index], deviceState()->threadPool);
       } else if (geom.type == dco::Geometry::Sphere) {
         unsigned index = sphereCount++;
         builder.enable_spatial_splits(true);
-        m_accelStorage.sphereBLSs[index] = builder.build(
-          SphereBVH{}, (const dco::Sphere *)geom.primitives.data, geom.primitives.len);
+        auto sphereBVH2 = builder.build(
+          index_bvh<basic_sphere<float>>{}, (const dco::Sphere *)geom.primitives.data, geom.primitives.len);
+        collapser.collapse(sphereBVH2, m_accelStorage.sphereBLSs[index], deviceState()->threadPool);
       } else if (geom.type == dco::Geometry::Cone) {
         unsigned index = coneCount++;
         builder.enable_spatial_splits(false); // no spatial splits for cones yet!
-        m_accelStorage.coneBLSs[index] = builder.build(
-          ConeBVH{}, (const dco::Cone *)geom.primitives.data, geom.primitives.len);
+        auto coneBVH2 = builder.build(
+          index_bvh<dco::Cone>{}, (const dco::Cone *)geom.primitives.data, geom.primitives.len);
+        collapser.collapse(coneBVH2, m_accelStorage.coneBLSs[index], deviceState()->threadPool);
       } else if (geom.type == dco::Geometry::Cylinder) {
         unsigned index = cylinderCount++;
         builder.enable_spatial_splits(false); // no spatial splits for cyls yet!
-        m_accelStorage.cylinderBLSs[index] = builder.build(
-          CylinderBVH{}, (const dco::Cylinder *)geom.primitives.data, geom.primitives.len);
+        auto cylinderBVH2 = builder.build(
+          index_bvh<basic_cylinder<float>>{}, (const dco::Cylinder *)geom.primitives.data, geom.primitives.len);
+        collapser.collapse(cylinderBVH2, m_accelStorage.cylinderBLSs[index], deviceState()->threadPool);
       } else if (geom.type == dco::Geometry::BezierCurve) {
         unsigned index = bezierCurveCount++;
         builder.enable_spatial_splits(false); // no spatial splits for bez. curves yet!
-        m_accelStorage.bezierCurveBLSs[index] = builder.build(
-          BezierCurveBVH{},
+        auto bezierCurveBVH2 = builder.build(
+          index_bvh<dco::BezierCurve>{},
           (const dco::BezierCurve *)geom.primitives.data, geom.primitives.len);
+        collapser.collapse(bezierCurveBVH2, m_accelStorage.bezierCurveBLSs[index], deviceState()->threadPool);
       } else if (geom.type == dco::Geometry::ISOSurface) {
         unsigned index = isoCount++;
         builder.enable_spatial_splits(false); // no spatial splits for ISOs
-        m_accelStorage.isoSurfaceBLSs[index] = builder.build(
-          ISOSurfaceBVH{}, (const dco::ISOSurface *)geom.primitives.data, 1);
+        auto isoSurfaceBVH2 = builder.build(
+          index_bvh<dco::ISOSurface>{}, (const dco::ISOSurface *)geom.primitives.data, 1);
+        collapser.collapse(isoSurfaceBVH2, m_accelStorage.isoSurfaceBLSs[index], deviceState()->threadPool);
       }
     }
 
@@ -183,9 +208,11 @@ void VisionaraySceneImpl::commit()
       const dco::Volume &vol = deviceState()->dcos.volumes[volID];
 
       binned_sah_builder builder;
+      bvh_collapser collapser;
       unsigned index = volumeCount++;
       builder.enable_spatial_splits(false); // no spatial splits for volumes/aabbs
-      m_accelStorage.volumeBLSs[index] = builder.build(VolumeBVH{}, &vol, 1);
+      auto volumeBVH2 = builder.build(index_bvh<dco::Volume>{}, &vol, 1);
+      collapser.collapse(volumeBVH2, m_accelStorage.volumeBLSs[index], deviceState()->threadPool);
     }
 
     m_BLSs.clear();
@@ -292,19 +319,18 @@ bool VisionaraySceneImpl::isValid() const
 
 aabb VisionaraySceneImpl::getBounds() const
 {
-#if defined(WITH_CUDA) || defined(WITH_HIP)
-  return m_gpuScene->getBounds();
-#else
-  if (type == World)
-    return m_worldTLS.node(0).get_bounds();
-  else
-    return m_TLS.node(0).get_bounds();
-#endif
+  // bounds that were valid when commit was called:
+  return m_bounds[boundsID];
 }
 
 void VisionaraySceneImpl::attachInstance(
     dco::Instance inst, unsigned instID, unsigned userID)
 {
+#if defined(WITH_CUDA) || defined(WITH_HIP)
+  m_gpuScene->attachInstance(inst, instID, userID);
+#else
+  m_bounds[boundsID].insert(get_prim_bounds(inst));
+
   m_instances.set(instID, inst.instID);
   m_objIds.set(instID, userID); // TODO: separate inst/geom
 
@@ -313,6 +339,7 @@ void VisionaraySceneImpl::attachInstance(
 
   // Upload/set accessible pointers
   deviceState()->onDevice.instances = deviceState()->dcos.instances.devicePtr();
+#endif
 }
 
 void VisionaraySceneImpl::attachGeometry(
@@ -324,6 +351,8 @@ void VisionaraySceneImpl::attachGeometry(
 
   if (geom.primitives.len == 0)
     return;
+
+  m_bounds[boundsID].insert(get_bounds(geom));
 
   m_geometries.set(geomID, geom.geomID);
   m_objIds.set(geomID, userID);
@@ -377,8 +406,8 @@ void VisionaraySceneImpl::attachGeometry(
 void VisionaraySceneImpl::attachVolume(
     dco::Volume vol, unsigned volID, unsigned userID)
 {
-  // Patch volID into scene primitives:
-  vol.volID = volID;
+  // use bounds member, that way we don't need to reach for the GPU:
+  m_bounds[boundsID].insert(vol.bounds);
 
   m_volumes.set(volID, vol.volID);
   m_objIds.set(volID, userID);

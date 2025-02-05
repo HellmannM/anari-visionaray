@@ -12,6 +12,10 @@ project(anari_library_visionaray LANGUAGES C CXX)
 
 include(GNUInstallDirs)
 
+# build external libraries
+
+add_subdirectory(external)
+
 # note: we're often tracking the most recent changes from ANARI-SDK
 # (on branch "next_release")
 find_package(anari 0.10.0 REQUIRED)
@@ -31,43 +35,38 @@ if (hip)
   find_package(hip)
 endif()
 
+option(ANARI_VISIONARAY_ENABLE_NANOVDB "Enable NanoVDB spatial field type" ON)
+set(nanovdb ${ANARI_VISIONARAY_ENABLE_NANOVDB})
+
+add_library(${PROJECT_NAME} SHARED)
 anari_generate_queries(
-  NAME visionaray
-  PREFIX VisionarayDevice
+  DEVICE_TARGET ${PROJECT_NAME}
   CPP_NAMESPACE visionaray
   JSON_DEFINITIONS_FILE ${CMAKE_CURRENT_SOURCE_DIR}/visionaray_device.json
   JSON_ROOT_LOCATION ${CMAKE_CURRENT_SOURCE_DIR}
 )
 
-anari_generate_queries(
-  NAME visionaray_cuda
-  PREFIX VisionarayCUDADevice
-  CPP_NAMESPACE visionaray
-  JSON_DEFINITIONS_FILE ${CMAKE_CURRENT_SOURCE_DIR}/visionaray_cuda_device.json
-  JSON_ROOT_LOCATION ${CMAKE_CURRENT_SOURCE_DIR}
-)
-
-anari_generate_queries(
-  NAME visionaray_hip
-  PREFIX VisionarayHIPDevice
-  CPP_NAMESPACE visionaray
-  JSON_DEFINITIONS_FILE ${CMAKE_CURRENT_SOURCE_DIR}/visionaray_hip_device.json
-  JSON_ROOT_LOCATION ${CMAKE_CURRENT_SOURCE_DIR}
-)
-
-add_library(${PROJECT_NAME} SHARED)
 if (cuda)
   add_library(${PROJECT_NAME}_cuda SHARED)
+  anari_generate_queries(
+    DEVICE_TARGET ${PROJECT_NAME}_cuda
+    CPP_NAMESPACE visionaray
+    JSON_DEFINITIONS_FILE ${CMAKE_CURRENT_SOURCE_DIR}/visionaray_cuda_device.json
+    JSON_ROOT_LOCATION ${CMAKE_CURRENT_SOURCE_DIR}
+  )
 endif()
+
 if (hip)
   add_library(${PROJECT_NAME}_hip SHARED)
+  anari_generate_queries(
+    DEVICE_TARGET ${PROJECT_NAME}_hip
+    CPP_NAMESPACE visionaray
+    JSON_DEFINITIONS_FILE ${CMAKE_CURRENT_SOURCE_DIR}/visionaray_hip_device.json
+    JSON_ROOT_LOCATION ${CMAKE_CURRENT_SOURCE_DIR}
+  )
 endif()
 
 set(SOURCES
-    array/Array1D.cpp
-    array/Array2D.cpp
-    array/Array3D.cpp
-    array/ObjectArray.cpp
     camera/Camera.cpp
     camera/Matrix.cpp
     camera/Orthographic.cpp
@@ -124,20 +123,25 @@ target_sources(${PROJECT_NAME} PRIVATE
   scene/volume/spatial_field/BlockStructuredField.cpp
   scene/volume/spatial_field/GridAccel.cpp
   scene/volume/spatial_field/UnstructuredField.cpp
-  VisionarayDeviceQueries.cpp
 )
+
+if (nanovdb)
+  target_sources(${PROJECT_NAME} PRIVATE scene/volume/spatial_field/NanoVDBField.cpp)
+  target_compile_definitions(${PROJECT_NAME} PRIVATE WITH_NANOVDB=1)
+  target_link_libraries(${PROJECT_NAME} PRIVATE
+    $<BUILD_INTERFACE:vsnray_nanovdb>)
+endif()
 
 include(GenerateExportHeader)
 generate_export_header(${PROJECT_NAME}
   EXPORT_MACRO_NAME "VISIONARAY_DEVICE_INTERFACE"
 )
 
-target_link_libraries(${PROJECT_NAME}
+target_link_libraries(${PROJECT_NAME} PUBLIC
     visionaray::visionaray anari::anari anari::helium)
 
 target_include_directories(${PROJECT_NAME} PUBLIC
   $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}>
-  $<BUILD_INTERFACE:${CMAKE_CURRENT_BINARY_DIR}>
 )
 
 if (cuda)
@@ -154,7 +158,6 @@ if (cuda)
     scene/volume/spatial_field/GridAccel.cu
     scene/volume/spatial_field/UnstructuredField.cu
     scene/VisionaraySceneGPU.cu
-    VisionarayCUDADeviceQueries.cpp
   )
   set_source_files_properties(
     frame/Frame.cu
@@ -168,21 +171,31 @@ if (cuda)
     PROPERTIES COMPILE_FLAGS "--extended-lambda --expt-relaxed-constexpr"
   )
   target_compile_definitions(${PROJECT_NAME}_cuda PRIVATE WITH_CUDA=1)
+  if (nanovdb)
+    target_sources(${PROJECT_NAME}_cuda PRIVATE
+        scene/volume/spatial_field/NanoVDBField.cu)
+    set_source_files_properties(
+      scene/volume/spatial_field/NanoVDBField.cu
+      PROPERTIES COMPILE_FLAGS "--extended-lambda --expt-relaxed-constexpr"
+    )
+    target_link_libraries(${PROJECT_NAME}_cuda PRIVATE
+      $<BUILD_INTERFACE:vsnray_nanovdb>)
+    target_compile_definitions(${PROJECT_NAME}_cuda PRIVATE WITH_NANOVDB=1)
+  endif()
 
   generate_export_header(${PROJECT_NAME}_cuda
     EXPORT_MACRO_NAME "VISIONARAY_DEVICE_INTERFACE"
   )
 
-  target_link_libraries(${PROJECT_NAME}_cuda
+  target_link_libraries(${PROJECT_NAME}_cuda PUBLIC
       visionaray::visionaray anari::anari anari::helium)
 
   if (TARGET CUDA::cudart)
-    target_link_libraries(${PROJECT_NAME}_cuda CUDA::cudart)
+    target_link_libraries(${PROJECT_NAME}_cuda PUBLIC CUDA::cudart)
   endif()
 
   target_include_directories(${PROJECT_NAME}_cuda PUBLIC
     $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}>
-    $<BUILD_INTERFACE:${CMAKE_CURRENT_BINARY_DIR}>
   )
 endif()
 
@@ -194,9 +207,11 @@ if (hip)
     renderer/DRR_impl.hip
     renderer/Raycast_impl.hip
     scene/VisionaraySceneGPU.hip
-    VisionarayHIPDeviceQueries.cpp
   )
   target_compile_definitions(${PROJECT_NAME}_hip PRIVATE WITH_HIP=1)
+  if (nanovdb)
+    message(WARNING "No VDB support with HIP")
+  endif()
 
   target_link_libraries(${PROJECT_NAME}_hip
       visionaray::visionaray anari::anari anari::helium)
@@ -211,7 +226,23 @@ if (hip)
 
   target_include_directories(${PROJECT_NAME}_hip PUBLIC
     $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}>
-    $<BUILD_INTERFACE:${CMAKE_CURRENT_BINARY_DIR}>
+  )
+endif()
+
+## Sample viewer ##
+
+option(ANARI_VISIONARAY_ENABLE_VIEWER "Compile the sample viewer application" OFF)
+if (ANARI_VISIONARAY_ENABLE_VIEWER)
+  find_package(Boost COMPONENTS filesystem iostreams system)
+  add_executable(visionaraySampleViewer)
+  target_sources(visionaraySampleViewer PRIVATE
+    apps/viewer.cpp
+    apps/AnariCamera.cpp
+  )
+  target_link_libraries(visionaraySampleViewer visionaray::visionaray_common anari::anari)
+  target_compile_definitions(visionaraySampleViewer
+    PRIVATE
+      DATA_PATH="${CMAKE_CURRENT_SOURCE_DIR}/apps/data"
   )
 endif()
 

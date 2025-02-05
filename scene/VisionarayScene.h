@@ -22,20 +22,36 @@ struct VisionaraySceneImpl
   friend struct VisionaraySceneGPU;
 #endif
 
-  typedef index_bvh<basic_triangle<3,float>> TriangleBVH;
-  typedef index_bvh<basic_triangle<3,float>> QuadBVH;
-  typedef index_bvh<basic_sphere<float>>     SphereBVH;
-  typedef index_bvh<dco::Cone>               ConeBVH;
-  typedef index_bvh<basic_cylinder<float>>   CylinderBVH;
-  typedef index_bvh<dco::BezierCurve>        BezierCurveBVH;
-  typedef index_bvh<dco::ISOSurface>         ISOSurfaceBVH;
-  typedef index_bvh<dco::Volume>             VolumeBVH;
+#if defined(WITH_CUDA) || defined(WITH_HIP)
+  typedef index_bvh<basic_triangle<3,float>>  TriangleBVH;
+  typedef index_bvh<basic_triangle<3,float>>  QuadBVH;
+  typedef index_bvh<basic_sphere<float>>      SphereBVH;
+  typedef index_bvh<dco::Cone>                ConeBVH;
+  typedef index_bvh<basic_cylinder<float>>    CylinderBVH;
+  typedef index_bvh<dco::BezierCurve>         BezierCurveBVH;
+  typedef index_bvh<dco::ISOSurface>          ISOSurfaceBVH;
+  typedef index_bvh<dco::Volume>              VolumeBVH;
+#else
+  typedef index_bvh4<basic_triangle<3,float>> TriangleBVH;
+  typedef index_bvh4<basic_triangle<3,float>> QuadBVH;
+  typedef index_bvh4<basic_sphere<float>>     SphereBVH;
+  typedef index_bvh4<dco::Cone>               ConeBVH;
+  typedef index_bvh4<basic_cylinder<float>>   CylinderBVH;
+  typedef index_bvh4<dco::BezierCurve>        BezierCurveBVH;
+  typedef index_bvh4<dco::ISOSurface>         ISOSurfaceBVH;
+  typedef index_bvh4<dco::Volume>             VolumeBVH;
+#endif
 
   typedef index_bvh<dco::BLS> TLS;
   typedef index_bvh<dco::Instance> WorldTLS;
 
   enum Type { World, Group, };
   Type type;
+
+  // double-buffered bounds, attaching geoms, vols, etc. updates
+  // back-buffer, buffers get swapped on commit
+  aabb m_bounds[2];
+  int boundsID{0};
 
   // Surface data //
   DeviceHandleArray m_instances;

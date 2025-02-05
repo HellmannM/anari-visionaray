@@ -47,6 +47,11 @@ using hip_index_bvh     = index_bvh_t<hip::device_vector<P>, hip::device_vector<
 } // namespace visionaray
 #endif
 
+#ifdef WITH_NANOVDB
+#include <nanovdb/NanoVDB.h>
+#include <nanovdb/math/SampleFromVoxels.h>
+#endif
+
 namespace visionaray {
 
 namespace dco {
@@ -383,7 +388,7 @@ inline GridAccel createGridAccel()
 
 struct SpatialField
 {
-  enum Type { StructuredRegular, Unstructured, BlockStructured, Unknown, };
+  enum Type { StructuredRegular, Unstructured, BlockStructured, NanoVDB, Unknown, };
   Type type;
   unsigned fieldID;
   float delta;
@@ -426,7 +431,7 @@ struct SpatialField
 #elif defined(WITH_HIP)
       hip_index_bvh<UElem>::bvh_ref samplingBVH;
 #else
-      index_bvh<UElem>::bvh_ref samplingBVH;
+      index_bvh4<UElem>::bvh_ref samplingBVH;
 #endif
     } asUnstructured;
     struct {
@@ -435,9 +440,15 @@ struct SpatialField
 #elif defined(WITH_HIP)
       hip_index_bvh<Block>::bvh_ref samplingBVH;
 #else
-      index_bvh<Block>::bvh_ref samplingBVH;
+      index_bvh4<Block>::bvh_ref samplingBVH;
 #endif
     } asBlockStructured;
+#ifdef WITH_NANOVDB
+    struct {
+      nanovdb::NanoGrid<float> *grid;
+      tex_filter_mode filterMode;
+    } asNanoVDB;
+#endif
   };
 };
 
@@ -461,7 +472,11 @@ inline bool sampleField(const SpatialField &sf, vec3 P, float &value) {
     ray.ori = P;
     ray.dir = float3(1.f);
     ray.tmin = ray.tmax = 0.f;
+#if defined(WITH_CUDA) || defined(WITH_HIP)
     auto hr = intersect(ray, sf.asUnstructured.samplingBVH);
+#else
+    auto hr = intersect_ray1_bvh4(ray, sf.asUnstructured.samplingBVH);
+#endif
 
     if (!hr.hit)
       return false;
@@ -478,7 +493,11 @@ inline bool sampleField(const SpatialField &sf, vec3 P, float &value) {
     float basisPRD[2] = {0.f,0.f};
     ray.prd = &basisPRD;
 
+#if defined(WITH_CUDA) || defined(WITH_HIP)
     auto hr = intersect(ray, sf.asBlockStructured.samplingBVH);
+#else
+    auto hr = intersect_ray1_bvh4(ray, sf.asBlockStructured.samplingBVH);
+#endif
 
     if (basisPRD[1] == 0.f)
       return false;
@@ -486,6 +505,20 @@ inline bool sampleField(const SpatialField &sf, vec3 P, float &value) {
     value = basisPRD[0]/basisPRD[1];
     return true;
   }
+#ifdef WITH_NANOVDB
+  else if (sf.type == SpatialField::NanoVDB) {
+    auto acc = sf.asNanoVDB.grid->getAccessor();
+    if (sf.asNanoVDB.filterMode == Nearest) {
+      auto smp = nanovdb::math::createSampler<0>(acc);
+      value = smp(nanovdb::math::Vec3<float>(P.x,P.y,P.z));
+      return true;
+    } else if (sf.asNanoVDB.filterMode == Linear) {
+      auto smp = nanovdb::math::createSampler<1>(acc);
+      value = smp(nanovdb::math::Vec3<float>(P.x,P.y,P.z));
+      return true;
+    }
+  }
+#endif
 
   return false;
 }
@@ -636,7 +669,7 @@ inline hit_record<Ray, primitive<unsigned>> intersect(Ray ray, const Volume &vol
       if (majorant <= 0.f)
         break;
 
-      t -= (logf(1.f - rnd()) / majorant) * unitDistance;
+      t -= (logf(1.f - rnd()) / (majorant * unitDistance));
 
       if (t >= t1)
         break;
@@ -1301,14 +1334,14 @@ struct BLS
   };
 #else
   union {
-    index_bvh<basic_triangle<3,float>>::bvh_ref asTriangle;
-    index_bvh<basic_triangle<3,float>>::bvh_ref asQuad;
-    index_bvh<basic_sphere<float>>::bvh_ref asSphere;
-    index_bvh<dco::Cone>::bvh_ref asCone;
-    index_bvh<basic_cylinder<float>>::bvh_ref asCylinder;
-    index_bvh<dco::BezierCurve>::bvh_ref asBezierCurve;
-    index_bvh<dco::ISOSurface>::bvh_ref asISOSurface;
-    index_bvh<dco::Volume>::bvh_ref asVolume;
+    index_bvh4<basic_triangle<3,float>>::bvh_ref asTriangle;
+    index_bvh4<basic_triangle<3,float>>::bvh_ref asQuad;
+    index_bvh4<basic_sphere<float>>::bvh_ref asSphere;
+    index_bvh4<dco::Cone>::bvh_ref asCone;
+    index_bvh4<basic_cylinder<float>>::bvh_ref asCylinder;
+    index_bvh4<dco::BezierCurve>::bvh_ref asBezierCurve;
+    index_bvh4<dco::ISOSurface>::bvh_ref asISOSurface;
+    index_bvh4<dco::Volume>::bvh_ref asVolume;
   };
 #endif
 };
@@ -1371,6 +1404,7 @@ inline aabb get_bounds(const BLS &bls)
 VSNRAY_FUNC
 inline hit_record<Ray, primitive<unsigned>> intersect(const Ray &ray, const BLS &bls)
 {
+#if defined(WITH_CUDA) || defined(WITH_HIP)
   if (bls.type == BLS::Triangle && (ray.intersectionMask & Ray::Triangle))
     return intersect(ray,bls.asTriangle);
   else if (bls.type == BLS::Quad && (ray.intersectionMask & Ray::Quad))
@@ -1389,16 +1423,89 @@ inline hit_record<Ray, primitive<unsigned>> intersect(const Ray &ray, const BLS 
     return intersect(ray,bls.asVolume);
   else if (bls.type == BLS::Volume && (ray.intersectionMask & Ray::VolumeBounds))
     return intersect(ray,bls.asVolume);
+#else
+  if (bls.type == BLS::Triangle && (ray.intersectionMask & Ray::Triangle))
+    return intersect_ray1_bvh4(ray,bls.asTriangle);
+  else if (bls.type == BLS::Quad && (ray.intersectionMask & Ray::Quad))
+    return intersect_ray1_bvh4(ray,bls.asQuad);
+  else if (bls.type == BLS::Sphere && (ray.intersectionMask & Ray::Sphere))
+    return intersect_ray1_bvh4(ray,bls.asSphere);
+  else if (bls.type == BLS::Cone && (ray.intersectionMask & Ray::Cone))
+    return intersect_ray1_bvh4(ray,bls.asCone);
+  else if (bls.type == BLS::Cylinder && (ray.intersectionMask & Ray::Cylinder))
+    return intersect_ray1_bvh4(ray,bls.asCylinder);
+  else if (bls.type == BLS::BezierCurve && (ray.intersectionMask & Ray::BezierCurve))
+    return intersect_ray1_bvh4(ray,bls.asBezierCurve);
+  else if (bls.type == BLS::ISOSurface && (ray.intersectionMask & Ray::ISOSurface))
+    return intersect_ray1_bvh4(ray,bls.asISOSurface);
+  else if (bls.type == BLS::Volume && (ray.intersectionMask & Ray::Volume))
+    return intersect_ray1_bvh4(ray,bls.asVolume);
+  else if (bls.type == BLS::Volume && (ray.intersectionMask & Ray::VolumeBounds))
+    return intersect_ray1_bvh4(ray,bls.asVolume);
+#endif
 
   return {};
+}
+
+
+// bounds from primitives; node bounds might be more
+// conservative, due to quantization, etc.
+VSNRAY_FUNC
+inline aabb get_prim_bounds(const BLS &bls)
+{
+  aabb result;
+  result.invalidate();
+
+  if (bls.type == BLS::Triangle) {
+    for (unsigned i=0; i<bls.asTriangle.num_primitives(); ++i) {
+      result.insert(get_bounds(bls.asTriangle.primitive(i)));
+    }
+  }
+  else if (bls.type == BLS::Quad) {
+    for (unsigned i=0; i<bls.asQuad.num_primitives(); ++i) {
+      result.insert(get_bounds(bls.asQuad.primitive(i)));
+    }
+  }
+  else if (bls.type == BLS::Sphere) {
+    for (unsigned i=0; i<bls.asSphere.num_primitives(); ++i) {
+      result.insert(get_bounds(bls.asSphere.primitive(i)));
+    }
+  }
+  else if (bls.type == BLS::Cone) {
+    for (unsigned i=0; i<bls.asCone.num_primitives(); ++i) {
+      result.insert(get_bounds(bls.asCone.primitive(i)));
+    }
+  }
+  else if (bls.type == BLS::Cylinder) {
+    for (unsigned i=0; i<bls.asCylinder.num_primitives(); ++i) {
+      result.insert(get_bounds(bls.asCylinder.primitive(i)));
+    }
+  }
+  else if (bls.type == BLS::BezierCurve) {
+    for (unsigned i=0; i<bls.asBezierCurve.num_primitives(); ++i) {
+      result.insert(get_bounds(bls.asBezierCurve.primitive(i)));
+    }
+  }
+  else if (bls.type == BLS::ISOSurface) {
+    for (unsigned i=0; i<bls.asISOSurface.num_primitives(); ++i) {
+      result.insert(get_bounds(bls.asISOSurface.primitive(i)));
+    }
+  }
+  else if (bls.type == BLS::Volume) {
+    for (unsigned i=0; i<bls.asVolume.num_primitives(); ++i) {
+      result.insert(get_bounds(bls.asVolume.primitive(i)));
+    }
+  }
+
+  return result;
 }
 
 // Array //
 
 struct Array
 {
-  const void *data{nullptr};
-  size_t len{0};
+  const void *data;
+  size_t len;
   TypeInfo typeInfo;
 };
 
@@ -1412,10 +1519,10 @@ enum class Attribute
 struct Instance
 {
   enum Type { Transform, MotionTransform, Unknown, };
-  Type type{Unknown};
-  unsigned instID{UINT_MAX};
-  unsigned userID{UINT_MAX};
-  unsigned groupID{UINT_MAX};
+  Type type;
+  unsigned instID;
+  unsigned userID;
+  unsigned groupID;
 #ifdef WITH_CUDA
   cuda_index_bvh<BLS>::bvh_ref theBVH;
 #elif defined(WITH_HIP)
@@ -1435,6 +1542,7 @@ inline Instance createInstance()
 {
   Instance inst;
   memset(&inst,0,sizeof(inst));
+  inst.type    = Instance::Unknown;
   inst.instID  = UINT_MAX;
   inst.userID  = UINT_MAX;
   inst.groupID = UINT_MAX;
@@ -1442,13 +1550,13 @@ inline Instance createInstance()
 }
 
 VSNRAY_FUNC
-inline aabb get_bounds(const Instance &bls)
+inline aabb get_bounds(const Instance &inst)
 {
-  if (bls.type == Instance::Transform && bls.theBVH.num_nodes()) {
+  if (inst.type == Instance::Transform && inst.theBVH.num_nodes()) {
 
-    aabb bound = bls.theBVH.node(0).get_bounds();
-    mat3f rot = inverse(bls.affineInv[0]);
-    vec3f trans = -bls.transInv[0];
+    aabb bound = inst.theBVH.node(0).get_bounds();
+    mat3f rot = inverse(inst.affineInv[0]);
+    vec3f trans = -inst.transInv[0];
     auto verts = compute_vertices(bound);
     aabb result;
     result.invalidate();
@@ -1457,13 +1565,13 @@ inline aabb get_bounds(const Instance &bls)
       result.insert(v);
     }
     return result;
-  } else if (bls.type == Instance::MotionTransform && bls.len) {
+  } else if (inst.type == Instance::MotionTransform && inst.len) {
     aabb result;
     result.invalidate();
-    for (unsigned i = 0; i < bls.len; ++i) {
-      aabb bound = bls.theBVH.node(0).get_bounds();
-      mat3f rot = inverse(bls.affineInv[i]);
-      vec3f trans = -bls.transInv[i];
+    for (unsigned i = 0; i < inst.len; ++i) {
+      aabb bound = inst.theBVH.node(0).get_bounds();
+      mat3f rot = inverse(inst.affineInv[i]);
+      vec3f trans = -inst.transInv[i];
       auto verts = compute_vertices(bound);
       for (vec3 v : verts) {
         v = rot * v + trans;
@@ -1476,32 +1584,73 @@ inline aabb get_bounds(const Instance &bls)
   return {};
 }
 
+// bounds from primitives; node bounds might be more
+// conservative, due to quantization, etc.
+VSNRAY_FUNC
+inline aabb get_prim_bounds(const Instance &inst)
+{
+  if (inst.type == Instance::Transform && inst.theBVH.num_nodes()) {
+
+    aabb result;
+    result.invalidate();
+    for (unsigned i=0; i<inst.theBVH.num_primitives(); ++i) {
+      aabb bound = get_prim_bounds(inst.theBVH.primitive(i));
+      mat3f rot = inverse(inst.affineInv[0]);
+      vec3f trans = -inst.transInv[0];
+      auto verts = compute_vertices(bound);
+      for (vec3 v : verts) {
+        v = rot * v + trans;
+        result.insert(v);
+      }
+    }
+    return result;
+  } else if (inst.type == Instance::MotionTransform && inst.len) {
+    aabb result;
+    result.invalidate();
+    for (unsigned i=0; i<inst.theBVH.num_primitives(); ++i) {
+      for (unsigned j = 0; j < inst.len; ++j) {
+        aabb bound = get_prim_bounds(inst.theBVH.primitive(i));
+        mat3f rot = inverse(inst.affineInv[j]);
+        vec3f trans = -inst.transInv[j];
+        auto verts = compute_vertices(bound);
+        for (vec3 v : verts) {
+          v = rot * v + trans;
+          result.insert(v);
+        }
+      }
+    }
+    return result;
+  }
+
+  return {};
+}
+
 VSNRAY_FUNC
 inline hit_record<Ray, primitive<unsigned>> intersect(
-    const Ray &ray, const Instance &bls)
+    const Ray &ray, const Instance &inst)
 {
   mat3 affineInv;
   vec3 transInv;
 
-  if (bls.type == Instance::Transform) {
-    affineInv = bls.affineInv[0];
-    transInv = bls.transInv[0];
-  } else if (bls.type == Instance::MotionTransform) {
-    float rayTime = clamp(ray.time, bls.time.min, bls.time.max);
+  if (inst.type == Instance::Transform) {
+    affineInv = inst.affineInv[0];
+    transInv = inst.transInv[0];
+  } else if (inst.type == Instance::MotionTransform) {
+    float rayTime = clamp(ray.time, inst.time.min, inst.time.max);
 
-    float time01 = rayTime - bls.time.min / (bls.time.max - bls.time.min);
+    float time01 = rayTime - inst.time.min / (inst.time.max - inst.time.min);
 
-    unsigned ID1 = unsigned(float(bls.len-1) * time01);
-    unsigned ID2 = min(bls.len-1, ID1+1);
+    unsigned ID1 = unsigned(float(inst.len-1) * time01);
+    unsigned ID2 = min(inst.len-1, ID1+1);
 
-    float frac = time01 * (bls.len-1) - ID1;
+    float frac = time01 * (inst.len-1) - ID1;
 
-    affineInv = lerp(bls.affineInv[ID1],
-                     bls.affineInv[ID2],
+    affineInv = lerp(inst.affineInv[ID1],
+                     inst.affineInv[ID2],
                      frac);
 
-    transInv = lerp(bls.transInv[ID1],
-                    bls.transInv[ID2],
+    transInv = lerp(inst.transInv[ID1],
+                    inst.transInv[ID2],
                     frac);
   }
 
@@ -1509,10 +1658,10 @@ inline hit_record<Ray, primitive<unsigned>> intersect(
   xfmRay.ori = affineInv * (xfmRay.ori + transInv);
   xfmRay.dir = affineInv * xfmRay.dir;
 
-  auto hr = intersect(xfmRay,bls.theBVH);
+  auto hr = intersect(xfmRay,inst.theBVH);
   if (hr.hit) {
     hr.isect_pos = xfmRay.ori + hr.t * xfmRay.dir;
-    hr.inst_id = bls.instID;
+    hr.inst_id = inst.instID;
   } else {
     hr.inst_id = ~0u;
   }
@@ -1646,6 +1795,45 @@ inline Geometry createGeometry()
   geom.type = Geometry::Unknown;
   geom.geomID = UINT_MAX;
   return geom;
+}
+
+VSNRAY_FUNC
+inline aabb get_bounds(const Geometry &geom)
+{
+  aabb result;
+  result.invalidate();
+
+  if (geom.type == dco::Geometry::Triangle) {
+    for (size_t i=0;i<geom.primitives.len;++i) {
+      result.insert(get_bounds(geom.as<dco::Triangle>(i)));
+    }
+  } else if (geom.type == dco::Geometry::Quad) {
+    for (size_t i=0;i<geom.primitives.len;++i) {
+      result.insert(get_bounds(geom.as<dco::Triangle>(i)));
+    }
+  } else if (geom.type == dco::Geometry::Sphere) {
+    for (size_t i=0;i<geom.primitives.len;++i) {
+      result.insert(get_bounds(geom.as<dco::Sphere>(i)));
+    }
+  } else if (geom.type == dco::Geometry::Cone) {
+    for (size_t i=0;i<geom.primitives.len;++i) {
+      result.insert(get_bounds(geom.as<dco::Cone>(i)));
+    }
+  } else if (geom.type == dco::Geometry::Cylinder) {
+    for (size_t i=0;i<geom.primitives.len;++i) {
+      result.insert(get_bounds(geom.as<dco::Cylinder>(i)));
+    }
+  } else if (geom.type == dco::Geometry::BezierCurve) {
+    for (size_t i=0;i<geom.primitives.len;++i) {
+      result.insert(get_bounds(geom.as<dco::BezierCurve>(i)));
+    }
+  } else if (geom.type == dco::Geometry::ISOSurface) {
+    if (geom.primitives.len) {
+      result.insert(get_bounds(geom.as<dco::ISOSurface>(0)));
+    }
+  }
+
+  return result;
 }
 
 // Sampler //

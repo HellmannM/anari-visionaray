@@ -34,7 +34,6 @@ Frame::Frame(VisionarayGlobalState *s) : helium::BaseFrame(s)
 {
   vframe = dco::createFrame();
   vframe.frameID = deviceState()->dcos.frames.alloc(vframe);
-  s->objectCounts.frames++;
 #ifdef WITH_CUDA
   CUDA_SAFE_CALL(cudaEventCreate(&m_eventStart));
   CUDA_SAFE_CALL(cudaEventCreate(&m_eventStop));
@@ -64,7 +63,6 @@ Frame::~Frame()
   HIP_SAFE_CALL(hipEventDestroy(m_eventStop));
 #endif
   deviceState()->dcos.frames.free(vframe.frameID);
-  deviceState()->objectCounts.frames--;
 }
 
 bool Frame::isValid() const
@@ -171,8 +169,6 @@ bool Frame::getProperty(
 #elif defined(WITH_HIP)
     HIP_SAFE_CALL(hipEventElapsedTime(&m_duration, m_eventStart, m_eventStop));
     m_duration /= 1000.f;
-#else
-    m_duration = std::chrono::duration<float>(m_eventStop - m_eventStart).count();
 #endif
     helium::writeToVoidP(ptr, m_duration);
     return true;
@@ -192,7 +188,9 @@ bool Frame::getProperty(
 
 void Frame::renderFrame()
 {
+#if !defined(WITH_CUDA) && !defined(WITH_HIP)
   this->refInc(helium::RefType::INTERNAL);
+#endif
 
   auto *state = deviceState();
   state->waitOnCurrentFrame();
@@ -359,12 +357,14 @@ void Frame::renderFrame()
     }
 
 #ifdef WITH_CUDA
-  CUDA_SAFE_CALL(cudaEventRecord(m_eventStop));
+    CUDA_SAFE_CALL(cudaEventRecord(m_eventStop));
 #elif defined(WITH_HIP)
-  HIP_SAFE_CALL(hipEventRecord(m_eventStop));
+    HIP_SAFE_CALL(hipEventRecord(m_eventStop));
 #else
     state->renderingSemaphore.frameEnd();
     m_eventStop = std::chrono::steady_clock::now();
+    // CPU: calculate directly in async function
+    m_duration = std::chrono::duration<float>(m_eventStop - m_eventStart).count();
   });
 #endif
 }
