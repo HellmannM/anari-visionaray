@@ -144,7 +144,7 @@ void VisionaraySceneImpl::commit()
       const dco::Geometry &geom = deviceState()->dcos.geometries[geomID];
 
       binned_sah_builder builder;
-      //bvh_optimizer optimizer;
+      bvh_optimizer optimizer;
       bvh_collapser collapser;
 
       if (geom.type == dco::Geometry::Triangle) {
