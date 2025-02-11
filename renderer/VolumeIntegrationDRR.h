@@ -34,12 +34,12 @@ inline float rayMarchVolumeDRR(ScreenSample &ss,
                             const dco::Volume &vol,
                             float3 &color,
                             float &alpha,
-                            float photon_energy) {
+                            float /*photon_energy*/) {
   constexpr size_t accumBufferSize{32};
   constexpr float min_contribution = 0.4f;
   constexpr float min_intensity = 0.4f;
   constexpr float max_intensity = 0.99f;
-  const float cutoff = static_cast<float>(- std::log(1.f - max_intensity) / std::log(photon_energy));
+  const float cutoff = - std::log(1.f - max_intensity);
 
   auto boxHit = intersect(ray, vol.bounds);
 
@@ -57,7 +57,8 @@ inline float rayMarchVolumeDRR(ScreenSample &ss,
 
   ray.tmin = ray.tmin * dt_scale;
   ray.tmax = ray.tmax * dt_scale;
-  float dt = dt_scale / vol.unitDistance;
+  const float dt = dt_scale / vol.unitDistance;
+  const float dt_cm = dt / dt_scale / 10.f; // dt is in [mm]
 
   MovingAccumBuffer<float, accumBufferSize> accum;
   float sectionMax{0.f};
@@ -76,19 +77,13 @@ inline float rayMarchVolumeDRR(ScreenSample &ss,
         sectionMax = section;
         tAtSectionMax = t;
       }
-      auto dist_cm = steps * dt / dt_scale / 10.f;
-      dist_cm /= 20.f; //TODO why is it off?
-      const auto average = lac_accumulated / steps;
-      if (dist_cm * average > cutoff)
+      if (dt_cm * lac_accumulated > cutoff)
         break;
       ++steps;
     }
   }
-  auto lac_averaged = lac_accumulated / steps;
-  auto dist_cm = (steps * dt / dt_scale) / 10.f; //TODO assuming dt is in [mm]
-  dist_cm /= 20.f; //TODO why is it off?
-  auto remaining = pow(photon_energy, -dist_cm * lac_averaged);
-  color = float3(1.f - std::clamp(remaining, 0.f, 1.f));
+  auto remaining = exp(- dt_cm * lac_accumulated);
+  color = float3(1.f - remaining);
   alpha = 1.f;
 
   // get depth
