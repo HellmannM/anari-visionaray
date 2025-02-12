@@ -155,15 +155,26 @@
           "description": "TAA weighting factor"
         },
         {
-          "name": "photonEnergy",
+          "name": "scatterFraction",
           "types": [
             "ANARI_FLOAT32"
           ],
           "tags": [],
-          "default": 100000.0,
+          "default": 0.5,
           "minimum": 0.0,
-          "maximum": 1000000.0,
-          "description": "Photon energy (tube potential) [eV]"
+          "maximum": 1.0,
+          "description": "Scatter intensity"
+        },
+        {
+          "name": "scatterSigma",
+          "types": [
+            "ANARI_FLOAT32"
+          ],
+          "tags": [],
+          "default": 50.0,
+          "minimum": 0.0,
+          "maximum": 1000.0,
+          "description": "Scatter intensity"
         },
         {
           "name": "pixelSamples",

@@ -1,6 +1,7 @@
 
 #include "for_each.h"
 #include "DRR_impl.h"
+#include "GaussianBlur.h"
 
 namespace visionaray {
 
@@ -28,7 +29,7 @@ inline PixelSample renderSample(ScreenSample &ss,
     float3 color(0.f);
     float alpha = 0.f;
 
-    result.depth = rayMarchVolumeDRR(ss, ray, vol, color, alpha, rendererState.photonEnergy);
+    result.depth = rayMarchVolumeDRR(ss, ray, vol, color, alpha);
     // magic numbers: low contribution pixels will keep depth (-FLT_MAX,-FLT_MAX,-FLT_MAX).
     if (result.depth != -FLT_MAX)
       result.origin = ray.ori + result.depth * ray.dir;
@@ -140,14 +141,57 @@ void VisionarayRendererDRR::renderFrame(const dco::Frame &frame,
         finalSample.color = accumColor*(1.f/spp);
         frame.writeSample(x, y, rendererState.accumID, finalSample);
       });
+
+  size_t bufferSize = size.x * size.y * 4;
+  uint8_t *onDevicePixelBuffer;
+  uint8_t *onDeviceBlurredPixelBuffer;
+  if (rendererState.scatterFraction >= 0.01f)
+  {
+#ifdef WITH_CUDA
+    CUDA_SAFE_CALL(cudaMalloc(&onDevicePixelBuffer, bufferSize));
+    CUDA_SAFE_CALL(cudaMalloc(&onDeviceBlurredPixelBuffer, bufferSize));
+    CUDA_SAFE_CALL(cudaMemcpy(onDevicePixelBuffer, frame.pixelBuffer, bufferSize, cudaMemcpyHostToDevice));
+#elif defined(WITH_HIP)
+    HIP_SAFE_CALL(hipMalloc(&onDevicePixelBuffer, bufferSize));
+    HIP_SAFE_CALL(hipMalloc(&onDeviceBlurredPixelBuffer, bufferSize));
+    HIP_SAFE_CALL(hipMemcpy(onDevicePixelBuffer, frame.pixelBuffer, bufferSize, hipMemcpyHostToDevice));
+#else
+    onDevicePixelBuffer = frame.pixelBuffer;
+    auto tmp = std::vector<uint8_t>(bufferSize);
+    onDeviceBlurredPixelBuffer = tmp.data();
+#endif
+  
+    applyGaussianBlur(state->threadPool, onDevicePixelBuffer, onDeviceBlurredPixelBuffer, size, rendererState.scatterSigma);
+  
+#ifdef WITH_CUDA
+    cuda::for_each(0, size.x, 0, size.y,
+#elif defined(WITH_HIP)
+    hip::for_each(0, size.x, 0, size.y,
+#else
+    parallel::for_each(state->threadPool, 0, size.x, 0, size.y,
+#endif
+        [=] VSNRAY_GPU_FUNC (int x, int y) {
+          const auto &frame = *framePtr;
+          const auto idx = y * size.x + x;
+          for (size_t i=0; i<frame.perPixelBytes; ++i)
+            frame.pixelBuffer[frame.perPixelBytes * idx + i] =
+                frame.pixelBuffer[frame.perPixelBytes * idx + i] * (1.f - rendererState.scatterFraction)
+                + onDeviceBlurredPixelBuffer[frame.perPixelBytes * idx + i] * rendererState.scatterFraction;
+        });
+  }
+
 #ifdef WITH_CUDA
   CUDA_SAFE_CALL(cudaFree(onDevicePtr));
   CUDA_SAFE_CALL(cudaFree(rendererStatePtr));
   CUDA_SAFE_CALL(cudaFree(framePtr));
+  CUDA_SAFE_CALL(cudaFree(onDevicePixelBuffer));
+  CUDA_SAFE_CALL(cudaFree(onDeviceBlurredPixelBuffer));
 #elif defined(WITH_HIP)
   HIP_SAFE_CALL(hipFree(onDevicePtr));
   HIP_SAFE_CALL(hipFree(rendererStatePtr));
   HIP_SAFE_CALL(hipFree(framePtr));
+  HIP_SAFE_CALL(hipFree(onDevicePixelBuffer));
+  HIP_SAFE_CALL(hipFree(onDeviceBlurredPixelBuffer));
 #endif
 }
 

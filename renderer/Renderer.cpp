@@ -65,7 +65,8 @@ void Renderer::commit()
     state.heatMapScale = getParam<float>("heatMapScale", 0.1f);
     state.taaEnabled = getParam<bool>("taa", false);
     state.taaAlpha = getParam<float>("taaAlpha", 0.3f);
-    state.photonEnergy = getParam<float>("photonEnergy", 120000.f);
+    state.scatterFraction = getParam<float>("scatterFraction", 0.5f);
+    state.scatterSigma = getParam<float>("scatterSigma", 50.f);
   };
 
   commitCommonState(vrend.rendererState);

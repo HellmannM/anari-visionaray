@@ -33,8 +33,7 @@ inline float rayMarchVolumeDRR(ScreenSample &ss,
                             Ray ray,
                             const dco::Volume &vol,
                             float3 &color,
-                            float &alpha,
-                            float /*photon_energy*/) {
+                            float &alpha) {
   constexpr size_t accumBufferSize{32};
   constexpr float min_contribution = 0.4f;
   constexpr float min_intensity = 0.4f;
