@@ -175,8 +175,10 @@ void VisionarayRendererDRR::renderFrame(const dco::Frame &frame,
           const auto idx = y * size.x + x;
           for (size_t i=0; i<frame.perPixelBytes; ++i)
             frame.pixelBuffer[frame.perPixelBytes * idx + i] =
-                frame.pixelBuffer[frame.perPixelBytes * idx + i] * (1.f - rendererState.scatterFraction)
-                + onDeviceBlurredPixelBuffer[frame.perPixelBytes * idx + i] * rendererState.scatterFraction;
+                std::clamp(
+                frame.pixelBuffer[frame.perPixelBytes * idx + i] * (1.f + rendererState.scatterFraction)
+                - onDeviceBlurredPixelBuffer[frame.perPixelBytes * idx + i] * rendererState.scatterFraction,
+                0.f, 255.f);
         });
   }
 
