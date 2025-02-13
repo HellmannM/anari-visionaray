@@ -15,6 +15,10 @@ StructuredRegularField::StructuredRegularField(VisionarayGlobalState *d)
 
 void StructuredRegularField::commit()
 {
+  bool skipGenTex{false};
+  if (m_dataArray.ptr)
+    skipGenTex = true;
+
   m_dataArray = getParamObject<Array3D>("data");
 
   if (!m_dataArray) {
@@ -37,6 +41,9 @@ void StructuredRegularField::commit()
   vfield.voxelSpaceTransform = mat4x3(S,T);
 
   setGradientDelta(min_element(m_spacing / 2.f));
+
+  if (skipGenTex)
+    return;
 
 #if defined(WITH_CUDA) || defined(WITH_HIP)
   texture<float, 3> tex(m_dims.x, m_dims.y, m_dims.z);
