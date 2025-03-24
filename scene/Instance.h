@@ -3,6 +3,9 @@
 
 #pragma once
 
+// std
+#include <optional>
+// ours
 #include "Group.h"
 
 namespace visionaray {
@@ -15,7 +18,11 @@ struct Instance : public Object
   static Instance *createInstance(
       std::string_view subtype, VisionarayGlobalState *s);
 
-  void commit() override;
+  void commitParameters() override;
+  void finalize() override;
+  void markFinalized() override;
+  bool isValid() const override;
+
 
   uint32_t id() const;
 
@@ -25,13 +32,17 @@ struct Instance : public Object
   dco::Instance visionarayInstance() const;
   virtual void visionarayInstanceUpdate();
 
-  void markCommitted() override;
-
-  bool isValid() const override;
-
  protected:
+  mat4 m_xfm;
+  helium::ChangeObserverPtr<Array1D> m_xfmArray;
+
   uint32_t m_id{~0u};
+  helium::ChangeObserverPtr<Array1D> m_idArray;
+
+  std::optional<float4> m_uniformAttributes[5];
+
   helium::IntrusivePtr<Group> m_group;
+
   dco::Instance vinstance;
 
   HostDeviceArray<mat4> m_xfms;

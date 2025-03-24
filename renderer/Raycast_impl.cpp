@@ -8,8 +8,13 @@ VSNRAY_FUNC
 inline PixelSample renderSample(ScreenSample &ss, Ray ray, unsigned worldID,
     const DeviceObjectRegistry &onDevice, const RendererState &rendererState)
 {
+  float4 bgColor = rendererState.bgColor;
+  if (rendererState.bgImage.width())
+    bgColor = tex2D(rendererState.bgImage,
+                    float2(ss.x/float(ss.frameSize.x),ss.y/float(ss.frameSize.y)));
+
   PixelSample result;
-  result.color = rendererState.bgColor;
+  result.color = bgColor;
   result.depth = 1e31f;
 
   if (onDevice.TLSs[worldID].num_primitives() == 0)
@@ -37,7 +42,7 @@ inline PixelSample renderSample(ScreenSample &ss, Ray ray, unsigned worldID,
 
     float4 attribs[5];
     for (int i=0; i<5; ++i) {
-      attribs[i] = getAttribute(geom, (dco::Attribute)i, hr.prim_id, uv);
+      attribs[i] = getAttribute(geom, inst, (dco::Attribute)i, hr.prim_id, uv);
     }
 
     getNormals(geom, hr.prim_id, localHitPos, uv, gn, sn);
@@ -62,8 +67,9 @@ inline PixelSample renderSample(ScreenSample &ss, Ray ray, unsigned worldID,
 
     if (rendererState.renderMode == RenderMode::Default) {
       float3 viewDir = -ray.dir;
+      auto safe_rcp = [](float f) { return f > 0.f ? 1.f/f : 0.f; };
       for (unsigned lightID=0; lightID<world.numLights; ++lightID) {
-        const dco::Light &light = onDevice.lights[world.allLights[lightID]];
+        const dco::Light &light = getLight(world.allLights, lightID, onDevice);
 
         LightSample ls = sampleLight(light, hitPos, ss.random);
 
@@ -72,10 +78,10 @@ inline PixelSample renderSample(ScreenSample &ss, Ray ray, unsigned worldID,
                                    attribs,
                                    hr.prim_id,
                                    gn, sn,
-                                   viewDir,
-                                   ls.dir,
-                                   ls.intensity);
-        shadedColor += brdf / ls.pdf / ls.dist2;
+                                   normalize(viewDir),
+                                   normalize(ls.dir),
+                                   ls.intensity * safe_rcp(ls.dist2));
+        shadedColor += brdf * safe_rcp(ls.pdf);
       }
 
       shadedColor +=
@@ -120,7 +126,9 @@ inline PixelSample renderSample(ScreenSample &ss, Ray ray, unsigned worldID,
     hit = true;
 
     if (surfaceAlpha < 0.999f) {
-      ray.tmin = hr.t + 1e-4f;
+      hitPos = ray.ori + hr.t * ray.dir;
+      const float eps = epsilonFrom(hitPos, ray.dir, hr.t);
+      ray.tmin = hr.t + eps;
       hr = intersectSurfaces(ray, onDevice.TLSs[worldID]);
     } else {
       ray.tmax = hr.t;
@@ -131,10 +139,10 @@ inline PixelSample renderSample(ScreenSample &ss, Ray ray, unsigned worldID,
   // Background
   if (rendererState.envID >= 0 && onDevice.lights[rendererState.envID].visible) {
     auto hdri = onDevice.lights[rendererState.envID].asHDRI;
-    float2 uv = toUV(ray.dir);
-    result.color = over(float4(surfaceColor, surfaceAlpha), tex2D(hdri.radiance, uv));
+    result.color = over(float4(surfaceColor, surfaceAlpha),
+                        float4(hdri.intensity(ray.dir), 1.0f));
   } else {
-    result.color = over(float4(surfaceColor, surfaceAlpha), rendererState.bgColor);
+    result.color = over(float4(surfaceColor, surfaceAlpha), bgColor);
   }
 
   auto hrv = intersectVolumeBounds(ray, onDevice.TLSs[worldID]);
@@ -142,17 +150,17 @@ inline PixelSample renderSample(ScreenSample &ss, Ray ray, unsigned worldID,
   if (hrv.hit) {
     const auto &inst = onDevice.instances[hrv.instID];
     const auto &group = onDevice.groups[inst.groupID];
-    const dco::Volume &vol = onDevice.volumes[group.volumes[hrv.volID]];
+    const dco::Volume &vol = onDevice.volumes[group.volumes[hrv.localID]];
 
     float3 color(0.f);
     float alpha = 0.f;
 
-    rayMarchVolume(ss, ray, vol, color, alpha);
+    rayMarchVolume(ss, ray, vol, rendererState.volumeSamplingRateInv, color, alpha);
     result.color = over(float4(color,alpha), result.color);
     result.Ng = float3{}; // TODO: gradient
     result.Ns = float3{}; // TODO..
     result.albedo = float3{}; // TODO..
-    result.objId = group.objIds[hrv.volID];
+    result.objId = group.objIds[hrv.localID];
     result.instId = inst.userID;
 
     hit = true;
@@ -222,7 +230,11 @@ void VisionarayRendererRaycast::renderFrame(const dco::Frame &frame,
         ScreenSample ss{x, y, frameID, size, {/*no RNG*/}};
         Ray ray;
 
+#ifdef _MSC_VER
+        uint64_t clock_begin = clock();
+#else
         uint64_t clock_begin = clock64();
+#endif
 
         float4 accumColor{0.f};
         PixelSample firstSample;
@@ -249,7 +261,11 @@ void VisionarayRendererRaycast::renderFrame(const dco::Frame &frame,
           }
         }
 
+#ifdef _MSC_VER
+        uint64_t clock_end = clock();
+#else
         uint64_t clock_end = clock64();
+#endif
         if (rendererState.heatMapEnabled > 0.f) {
             float t = (clock_end - clock_begin)
                 * (rendererState.heatMapScale / spp);

@@ -17,10 +17,9 @@ Triangle::Triangle(VisionarayGlobalState *s)
   vgeom.type = dco::Geometry::Triangle;
 }
 
-void Triangle::commit()
+void Triangle::commitParameters()
 {
-  Geometry::commit();
-
+  Geometry::commitParameters();
   m_index = getParamObject<Array1D>("primitive.index");
   m_vertexPosition = getParamObject<Array1D>("vertex.position");
   m_vertexNormal = getParamObject<Array1D>("vertex.normal");
@@ -30,6 +29,11 @@ void Triangle::commit()
   m_vertexAttributes[2] = getParamObject<Array1D>("vertex.attribute2");
   m_vertexAttributes[3] = getParamObject<Array1D>("vertex.attribute3");
   m_vertexAttributes[4] = getParamObject<Array1D>("vertex.color");
+}
+
+void Triangle::finalize()
+{
+  Geometry::finalize();
 
   if (!m_vertexPosition) {
     reportMessage(ANARI_SEVERITY_WARNING,
@@ -39,7 +43,11 @@ void Triangle::commit()
 
   unsigned nextID = 0;
   auto addTriangle = [&](basic_triangle<3, float> &tri) {
-    if (length(tri.e1) > 0.f && length(tri.e2) > 0.f) {
+    //if (length(tri.e1) > 0.f && length(tri.e2) > 0.f) {
+    // TODO: we can discard invalid primitives here, but
+    // then also have to make sure to also discard vertex
+    // attributes (at least, iff we don't have indices!)
+    if (true) {
       tri.prim_id = nextID++;
       m_triangles.push_back(tri);
     }

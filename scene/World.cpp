@@ -6,11 +6,11 @@
 namespace visionaray {
 
 World::World(VisionarayGlobalState *s)
-  : Object(ANARI_WORLD, s)
-  , m_zeroSurfaceData(this)
-  , m_zeroVolumeData(this)
-  , m_zeroLightData(this)
-  , m_instanceData(this)
+    : Object(ANARI_WORLD, s),
+      m_zeroSurfaceData(this),
+      m_zeroVolumeData(this),
+      m_zeroLightData(this),
+      m_instanceData(this)
 {
   m_zeroGroup = new Group(s);
   m_zeroInstance = new Instance(s);
@@ -43,15 +43,19 @@ bool World::getProperty(
   return Object::getProperty(name, type, ptr, flags);
 }
 
-void World::commit()
+void World::commitParameters()
 {
-  cleanup();
-
   m_zeroSurfaceData = getParamObject<ObjectArray>("surface");
   m_zeroVolumeData = getParamObject<ObjectArray>("volume");
   m_zeroLightData = getParamObject<ObjectArray>("light");
+}
 
-  const bool addZeroInstance = m_zeroSurfaceData || m_zeroVolumeData || m_zeroLightData;
+void World::finalize()
+{
+  cleanup();
+
+  const bool addZeroInstance =
+      m_zeroSurfaceData || m_zeroVolumeData || m_zeroLightData;
   if (addZeroInstance)
     reportMessage(
         ANARI_SEVERITY_DEBUG, "visionaray::World will add zero instance");
@@ -80,8 +84,10 @@ void World::commit()
   } else
     m_zeroGroup->removeParam("light");
 
-  m_zeroGroup->commit();
-  m_zeroInstance->commit();
+  m_zeroGroup->commitParameters();
+  m_zeroInstance->commitParameters();
+  m_zeroGroup->finalize();
+  m_zeroInstance->finalize();
 
   m_instanceData = getParamObject<ObjectArray>("instance");
 
@@ -109,12 +115,6 @@ const std::vector<Instance *> &World::instances() const
 {
   return m_instances;
 }
-
-// void World::intersectVolumes(VolumeRay &ray) const
-//{
-//   for (auto *i : instances())
-//     i->group()->intersectVolumes(ray);
-// }
 
 VisionarayScene World::visionarayScene() const
 {
@@ -187,13 +187,12 @@ void World::rebuildTLS()
   uint32_t lightID = 0;
   std::for_each(m_instances.begin(), m_instances.end(), [&](auto *i) {
     if (i && i->isValid()
-        && (!i->group()->surfaces().empty()
-            || !i->group()->volumes().empty())) {
+        && (!i->group()->surfaces().empty() || !i->group()->volumes().empty()
+            || !i->group()->lights().empty())) {
       i->visionarayInstanceUpdate();
       vscene->attachInstance(i->visionarayInstance(), id, i->id());
-    } else if (i->group()->surfaces().empty() && i->group()->volumes().empty() && 
-       !i->group()->lights().empty()) {
-
+    } else if (i->group()->surfaces().empty() && i->group()->volumes().empty()
+        && !i->group()->lights().empty()) {
       // Only lights - these will not end up on a valid instance
       // (as there's no BLS), therefore add them here
       // TODO: we should transform those lights..

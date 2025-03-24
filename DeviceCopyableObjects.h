@@ -79,7 +79,7 @@ struct Ray : basic_ray<float>
     Volume = 0x100,
     VolumeBounds = 0x200,
   };
-  unsigned intersectionMask = All;
+  unsigned intersectionMask = (unsigned)All;
   float time{0.f};
   void *prd{nullptr};
 
@@ -391,7 +391,7 @@ struct SpatialField
   enum Type { StructuredRegular, Unstructured, BlockStructured, NanoVDB, Unknown, };
   Type type;
   unsigned fieldID;
-  float delta;
+  float cellSize;
   GridAccel gridAccel;
   mat4x3 voxelSpaceTransform;
 
@@ -431,7 +431,7 @@ struct SpatialField
 #elif defined(WITH_HIP)
       hip_index_bvh<UElem>::bvh_ref samplingBVH;
 #else
-      index_bvh4<UElem>::bvh_ref samplingBVH;
+      bvh4<UElem>::bvh_ref samplingBVH;
 #endif
     } asUnstructured;
     struct {
@@ -457,7 +457,7 @@ inline SpatialField createSpatialField()
   SpatialField field;
   memset(&field,0,sizeof(field));
   field.fieldID = UINT_MAX;
-  field.delta = 0.5f;
+  field.cellSize = 1.0f;
   return field;
 }
 
@@ -526,12 +526,12 @@ inline bool sampleField(const SpatialField &sf, vec3 P, float &value) {
 VSNRAY_FUNC
 inline bool sampleGradient(const SpatialField &sf, vec3 P, float3 &value) {
   float x0=0, x1=0, y0=0, y1=0, z0=0, z1=0;
-  bool b0 = sampleField(sf, P+float3{sf.delta, 0.f, 0.f}, x1);
-  bool b1 = sampleField(sf, P-float3{sf.delta, 0.f, 0.f}, x0);
-  bool b2 = sampleField(sf, P+float3{0.f, sf.delta, 0.f}, y1);
-  bool b3 = sampleField(sf, P-float3{0.f, sf.delta, 0.f}, y0);
-  bool b4 = sampleField(sf, P+float3{0.f, 0.f, sf.delta}, z1);
-  bool b5 = sampleField(sf, P-float3{0.f, 0.f, sf.delta}, z0);
+  bool b0 = sampleField(sf, sf.pointToVoxelSpace(P+float3{sf.cellSize, 0.f, 0.f}), x1);
+  bool b1 = sampleField(sf, sf.pointToVoxelSpace(P-float3{sf.cellSize, 0.f, 0.f}), x0);
+  bool b2 = sampleField(sf, sf.pointToVoxelSpace(P+float3{0.f, sf.cellSize, 0.f}), y1);
+  bool b3 = sampleField(sf, sf.pointToVoxelSpace(P-float3{0.f, sf.cellSize, 0.f}), y0);
+  bool b4 = sampleField(sf, sf.pointToVoxelSpace(P+float3{0.f, 0.f, sf.cellSize}), z1);
+  bool b5 = sampleField(sf, sf.pointToVoxelSpace(P-float3{0.f, 0.f, sf.cellSize}), z0);
   if (b0 && b1 && b2 && b3 && b4 && b5) {
     value = float3{x1,y1,z1}-float3{x0,y0,z0};
     return true; // TODO
@@ -570,7 +570,10 @@ struct Volume
   enum Type { TransferFunction1D, Unknown, };
   Type type{Unknown};
 
+  // ID in the device's global volume array
   unsigned volID{UINT_MAX};
+  // ID local to the group the volume is in
+  unsigned localID;
   float unitDistance;
 
   SpatialField field;
@@ -608,8 +611,9 @@ struct HitRecordVolume
   float3 albedo{0.f,0.f,0.f};
   float extinction{0.f};
   float Tr{1.f};
-  int volID{-1};
+  int volID{-1}; // global to the device
   int instID{-1};
+  int localID{-1}; // local to the group
 };
 
 struct VolumePRD
@@ -639,18 +643,19 @@ inline hit_record<Ray, primitive<unsigned>> intersect(Ray ray, const Volume &vol
     // themselves to compute [t0,t1]
     hr.hit = boxHit.hit && (boxHit.tfar >= ray.tmin);
     hr.t = max(ray.tmin,boxHit.tnear);
-    hr.geom_id = vol.volID;
+    hr.geom_id = vol.localID;
     if (hr.t < hrv.t) {
       hrv.hit = true;
       hrv.t = hr.t;
-      hrv.volID = hr.geom_id;
+      hrv.volID = vol.volID;
+      hrv.localID = hr.geom_id;
     }
     return hr;
   }
 
   Random &rnd = *prd.rnd;
 
-  hr.geom_id = vol.volID;
+  hr.geom_id = vol.localID;
   
   const auto &sf = vol.field;
   dco::GridAccel grid = sf.gridAccel;
@@ -659,6 +664,7 @@ inline hit_record<Ray, primitive<unsigned>> intersect(Ray ray, const Volume &vol
   float Tr{1.f};
   float extinction{0.f};
   float unitDistance = vol.unitDistance;
+  float invUnitDistance{1.f};
 
   auto woodcockFunc = [&](const int leafID, float t0, float t1) {
 
@@ -669,7 +675,7 @@ inline hit_record<Ray, primitive<unsigned>> intersect(Ray ray, const Volume &vol
       if (majorant <= 0.f)
         break;
 
-      t -= (logf(1.f - rnd()) / (majorant * unitDistance));
+      t -= (logf(1.f - rnd()) / (majorant * invUnitDistance));
 
       if (t >= t1)
         break;
@@ -707,6 +713,7 @@ inline hit_record<Ray, primitive<unsigned>> intersect(Ray ray, const Volume &vol
   ray.tmin = ray.tmin * dt_scale;
   ray.tmax = ray.tmax * dt_scale;
   unitDistance = unitDistance * dt_scale;
+  invUnitDistance = 1.f / unitDistance;
 
   hr.t = ray.tmax;
   if (sf.gridAccel.isValid())
@@ -720,7 +727,8 @@ inline hit_record<Ray, primitive<unsigned>> intersect(Ray ray, const Volume &vol
     if (hr.t < hrv.t) {
       hrv.hit = true;
       hrv.t = hr.t;
-      hrv.volID = hr.geom_id;
+      hrv.volID = vol.volID;
+      hrv.localID = hr.geom_id;
       hrv.albedo = albedo;
       hrv.Tr = Tr;
       hrv.extinction = extinction;
@@ -1334,14 +1342,14 @@ struct BLS
   };
 #else
   union {
-    index_bvh4<basic_triangle<3,float>>::bvh_ref asTriangle;
-    index_bvh4<basic_triangle<3,float>>::bvh_ref asQuad;
-    index_bvh4<basic_sphere<float>>::bvh_ref asSphere;
-    index_bvh4<dco::Cone>::bvh_ref asCone;
-    index_bvh4<basic_cylinder<float>>::bvh_ref asCylinder;
-    index_bvh4<dco::BezierCurve>::bvh_ref asBezierCurve;
-    index_bvh4<dco::ISOSurface>::bvh_ref asISOSurface;
-    index_bvh4<dco::Volume>::bvh_ref asVolume;
+    bvh4<basic_triangle<3,float>>::bvh_ref asTriangle;
+    bvh4<basic_triangle<3,float>>::bvh_ref asQuad;
+    bvh4<basic_sphere<float>>::bvh_ref asSphere;
+    bvh4<dco::Cone>::bvh_ref asCone;
+    bvh4<basic_cylinder<float>>::bvh_ref asCylinder;
+    bvh4<dco::BezierCurve>::bvh_ref asBezierCurve;
+    bvh4<dco::ISOSurface>::bvh_ref asISOSurface;
+    bvh4<dco::Volume>::bvh_ref asVolume;
   };
 #endif
 };
@@ -1500,6 +1508,14 @@ inline aabb get_prim_bounds(const BLS &bls)
   return result;
 }
 
+// Uniform //
+
+struct Uniform
+{
+  float4 value;
+  bool isSet;
+};
+
 // Array //
 
 struct Array
@@ -1523,6 +1539,7 @@ struct Instance
   unsigned instID;
   unsigned userID;
   unsigned groupID;
+  Uniform uniformAttributes[5];
 #ifdef WITH_CUDA
   cuda_index_bvh<BLS>::bvh_ref theBVH;
 #elif defined(WITH_HIP)
@@ -1645,13 +1662,13 @@ inline hit_record<Ray, primitive<unsigned>> intersect(
 
     float frac = time01 * (inst.len-1) - ID1;
 
-    affineInv = lerp(inst.affineInv[ID1],
-                     inst.affineInv[ID2],
-                     frac);
+    affineInv = lerp_r(inst.affineInv[ID1],
+                       inst.affineInv[ID2],
+                       frac);
 
-    transInv = lerp(inst.transInv[ID1],
-                    inst.transInv[ID2],
-                    frac);
+    transInv = lerp_r(inst.transInv[ID1],
+                      inst.transInv[ID2],
+                      frac);
   }
 
   Ray xfmRay(ray);
@@ -1702,6 +1719,7 @@ inline HitRecordVolume intersectVolumeBounds(Ray ray, const TLS &tls)
   auto hr = intersect(ray, tls);
 
   result.instID = hr.inst_id;
+  result.localID = hr.geom_id;
 
   return result;
 }
@@ -1781,6 +1799,7 @@ struct Geometry
   }
 
   Array primitives;
+  Uniform uniformAttributes[5];
   Array primitiveAttributes[5];
   Array vertexAttributes[5];
   Array index;
@@ -2077,7 +2096,41 @@ struct Light
   union {
     directional_light<float> asDirectional;
     point_light<float> asPoint;
-    spot_light<float> asSpot;
+    struct {
+      float3 position;
+      float3 direction;
+      float cosOuterAngle;
+      float cosInnerAngle;
+      float3 color;
+      float lightIntensity;
+
+      template <typename RNG>
+      VSNRAY_FUNC
+      inline light_sample<float> sample(const float3 &refPoint, RNG &rng) const
+      {
+        light_sample<float> result;
+        result.dir = position-refPoint;
+        result.dist = length(result.dir);
+        result.normal = normalize(
+            float3(rng() * 2.f - 1.f, rng() * 2.f - 1.f, rng() * 2.f - 1.f));
+        result.area = 1.f;
+        result.delta_light = true;
+        result.pdf = 1.f;
+        return result;
+      }
+
+      VSNRAY_FUNC
+      inline float3 intensity(const float3 lightDir) const
+      {
+        // compute intensity
+        float spot = dot(normalize(direction), normalize(-lightDir));
+        if (spot < cosOuterAngle) return float3(0.f);
+        if (spot > cosInnerAngle) return color * lightIntensity;
+        spot = (spot - cosOuterAngle) / (cosInnerAngle - cosOuterAngle);
+        spot = spot * spot * (3.f - 2.f * spot);
+        return color * lightIntensity * spot;
+      }
+    } asSpot;
     area_light<float,dco::Quad> asQuad;
     struct {
 #ifdef WITH_CUDA
@@ -2088,6 +2141,8 @@ struct Light
       texture_ref<float4, 2> radiance;
 #endif
       float scale;
+      mat3 toWorld;
+      mat3 toLocal;
       struct CDF {
         float *rows;
         float *lastCol;
@@ -2103,7 +2158,7 @@ struct Light
         float invjacobian = cdf.width*cdf.height/float(4*M_PI);
         float3 L(toPolar(float2(sample.x/float(cdf.width), sample.y/float(cdf.height))));
         light_sample<float> ls;
-        ls.dir = L;
+        ls.dir = toWorld*L;
         ls.dist = FLT_MAX;
         ls.pdf = sample.pdfx*sample.pdfy*invjacobian;
         return ls;
@@ -2112,12 +2167,48 @@ struct Light
       VSNRAY_FUNC
       inline float3 intensity(const float3 dir) const
       {
-        return tex2D(radiance, toUV(dir)).xyz()*scale;
+        return tex2D(radiance, toUV(toLocal*dir)).xyz()*scale;
       }
 
     } asHDRI;
   };
 };
+
+VSNRAY_FUNC
+inline Light xfmLight(const Light &light, const mat4 &xfm)
+{
+  Light result = light;
+  if (light.type == Light::Point) {
+    float4 pos(light.asPoint.position(),1.f);
+    pos = xfm * pos;
+    result.asPoint.set_position(pos.xyz());
+  } else if (light.type == Light::Directional) {
+    float3 dir = light.asDirectional.direction();
+    mat3 LU = top_left(xfm);
+    result.asDirectional.set_direction(LU * dir);
+  } else if (light.type == Light::Spot) {
+    float4 pos(light.asSpot.position, 1.f);
+    float3 dir = light.asSpot.direction;
+    pos = xfm * pos;
+    mat3 LU = top_left(xfm);
+    result.asSpot.position = pos.xyz();
+    result.asSpot.direction = LU * dir;
+  } else if (light.type == Light::Quad) {
+    float4 v1(light.asQuad.geometry().v1, 1.f);
+    float3 e1 = light.asQuad.geometry().e1;
+    float3 e2 = light.asQuad.geometry().e2;
+    v1 = xfm * v1;
+    mat3 LU = top_left(xfm);
+    e1 = LU * e1;
+    e2 = LU * e2;
+    result.asQuad.geometry().v1 = v1.xyz();
+    result.asQuad.geometry().e1 = e1;
+    result.asQuad.geometry().e2 = e2;
+  } else {
+    // TODO!
+  }
+  return result;
+}
 
 inline Light createLight()
 {
@@ -2128,6 +2219,13 @@ inline Light createLight()
   light.visible = true;
   return light;
 }
+
+// LightRef associates a light with an instance
+struct LightRef
+{
+  unsigned lightID;
+  unsigned instID;
+};
 
 // Group //
 
@@ -2164,8 +2262,8 @@ struct World
   unsigned worldID;
 
   unsigned numLights;
-  // flat list of lights active in all groups:
-  Handle *allLights;
+  // flat list of lights with instances associated
+  LightRef *allLights;
 };
 
 inline World createWorld()
@@ -2181,13 +2279,54 @@ inline World createWorld()
 
 struct Camera
 {
-  enum Type { Matrix, Pinhole, Ortho, Unknown, };
+  enum Type { Matrix, Pinhole, Omni, Ortho, Unknown, };
   Type type;
   unsigned camID;
   box1 shutter;
   thin_lens_camera asPinholeCam;
   union {
     matrix_camera asMatrixCam;
+
+    struct {
+      void init(float3 pos, float3 dir, float3 up)
+      {
+        this->pos = pos;
+        this->dir = dir;
+        this->up  = up;
+
+        float2 imgPlaneSize(1.f, 1.f);
+
+        U = normalize(cross(dir, up)) * imgPlaneSize.x;
+        V = normalize(cross(U, dir)) * imgPlaneSize.y;
+        W = pos - 0.5f * U - 0.5f * V;
+      }
+
+      VSNRAY_FUNC
+      inline Ray primary_ray(Ray/**/, float x, float y, float width, float height) const
+      {
+        float2 screen((x + 0.5f) / width, (y + 0.5f) / height);
+
+        Ray ray;
+
+        float theta = float(M_PI) * screen.y;
+        float phi = float(2*M_PI) * screen.x;
+
+        float3 localDir(sinf(theta) * cosf(phi),
+                        cosf(theta),
+                        sinf(theta) * sinf(phi));
+
+        ray.ori = U * screen.x + V * screen.y + W;
+        ray.dir = localDir * float3(1,-1,1);
+
+        ray.tmin = 0.f;
+        ray.tmax = FLT_MAX;
+        return ray;
+      }
+
+      float3 dir,pos,up;
+      float3 U, V, W;
+    } asOmniCam;
+
     struct {
       void init(float3 pos, float3 dir, float3 up, float aspect, float height,
                 box2f image_region)
@@ -2231,12 +2370,14 @@ struct Camera
     Ray ray;
     if (type == Pinhole)
       ray = asPinholeCam.primary_ray(Ray{}, rng, x, y, width, height);
+    else if (type == Omni)
+      ray = asOmniCam.primary_ray(Ray{}, x, y, width, height);
     else if (type == Ortho)
       ray = asOrthoCam.primary_ray(Ray{}, x, y, width, height);
     else if (type == Matrix)
       ray = asMatrixCam.primary_ray(Ray{}, x, y, width, height);
 
-    ray.time = lerp(shutter.min, shutter.max, rng());
+    ray.time = lerp_r(shutter.min, shutter.max, rng());
 
     return ray;
   }

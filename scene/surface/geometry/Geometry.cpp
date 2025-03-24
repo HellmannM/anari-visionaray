@@ -56,15 +56,36 @@ dco::Geometry Geometry::visionarayGeometry() const
   return vgeom;
 }
 
-void Geometry::commit()
+void Geometry::commitParameters()
 {
+  float4 attrV(0.f, 0.f, 0.f, 1.f);
+  if (getParam("attribute0", ANARI_FLOAT32_VEC4, &attrV))
+    m_uniformAttributes[0] = attrV;
+  if (getParam("attribute1", ANARI_FLOAT32_VEC4, &attrV))
+    m_uniformAttributes[1] = attrV;
+  if (getParam("attribute2", ANARI_FLOAT32_VEC4, &attrV))
+    m_uniformAttributes[2] = attrV;
+  if (getParam("attribute3", ANARI_FLOAT32_VEC4, &attrV))
+    m_uniformAttributes[3] = attrV;
+  if (getParam("color", ANARI_FLOAT32_VEC4, &attrV))
+    m_uniformAttributes[4] = attrV;
   m_attributes[0] = getParamObject<Array1D>("primitive.attribute0");
   m_attributes[1] = getParamObject<Array1D>("primitive.attribute1");
   m_attributes[2] = getParamObject<Array1D>("primitive.attribute2");
   m_attributes[3] = getParamObject<Array1D>("primitive.attribute3");
   m_attributes[4] = getParamObject<Array1D>("primitive.color");
+}
 
+void Geometry::finalize()
+{
   for (int i = 0; i < 5; ++i) {
+    // uniform.attribute
+    if (m_uniformAttributes[i]) {
+      vgeom.uniformAttributes[i].value = *m_uniformAttributes[i];
+      vgeom.uniformAttributes[i].isSet = true;
+    }
+
+    // primitive.attribute
     if (m_attributes[i]) {
       size_t sizeInBytes
           = m_attributes[i]->size() * anari::sizeOf(m_attributes[i]->elementType());
@@ -79,9 +100,9 @@ void Geometry::commit()
   }
 }
 
-void Geometry::markCommitted()
+void Geometry::markFinalized()
 {
-  Object::markCommitted();
+  Object::markFinalized();
   deviceState()->objectUpdates.lastBLSCommitSceneRequest =
       helium::newTimeStamp();
 }
@@ -93,15 +114,6 @@ void Geometry::dispatch()
   // Upload/set accessible pointers
   deviceState()->onDevice.geometries = deviceState()->dcos.geometries.devicePtr();
 }
-
-// float4 Geometry::getAttributeValue(const Attribute &attr, const Ray &ray) const
-// {
-//   if (attr == Attribute::NONE)
-//     return DEFAULT_ATTRIBUTE_VALUE;
-// 
-//   auto attrIdx = static_cast<int>(attr);
-//   return readAttributeValue(m_attributes[attrIdx].ptr, ray.primID);
-// }
 
 } // namespace visionaray
 

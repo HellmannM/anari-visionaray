@@ -2,6 +2,7 @@
 #pragma once
 
 // std
+#include <mutex>
 #include <vector>
 // ours
 #include "DeviceCopyableObjects.h"
@@ -255,6 +256,113 @@ struct DeviceArray
   T *devicePtr{nullptr};
   size_t len{0};
 };
+
+#else
+
+// ==================================================================
+// dynamic array for device data, emulated on the host
+// ==================================================================
+
+template <typename T>
+struct DeviceArray
+{
+ public:
+  typedef T value_type;
+
+  DeviceArray() = default;
+
+  ~DeviceArray()
+  {
+    std::free(devicePtr);
+    devicePtr = nullptr;
+    len = 0;
+  }
+
+  DeviceArray(size_t n)
+  {
+    devicePtr = (T *)std::malloc(n*sizeof(T));
+    len = n;
+  }
+
+  DeviceArray(const DeviceArray &rhs)
+  {
+    if (&rhs != this) {
+      devicePtr = (T *)std::malloc(rhs.len*sizeof(T));
+      std::memcpy(devicePtr, rhs.devicePtr, len*sizeof(T));
+      len = rhs.len;
+    }
+  }
+
+  DeviceArray(DeviceArray &&rhs)
+  {
+    if (&rhs != this) {
+      devicePtr = (T *)std::malloc(rhs.len*sizeof(T));
+      std::memcpy(devicePtr, rhs.devicePtr, len*sizeof(T));
+      std::free(rhs.devicePtr);
+      len = rhs.len;
+      rhs.devicePtr = nullptr;
+      rhs.len = 0;
+    }
+  }
+
+  DeviceArray &operator=(const DeviceArray &rhs)
+  {
+    if (&rhs != this) {
+      devicePtr = (T *)std::malloc(rhs.len*sizeof(T));
+      std::memcpy(devicePtr, rhs.devicePtr, len*sizeof(T));
+      len = rhs.len;
+    }
+    return *this;
+  }
+
+  DeviceArray &operator=(DeviceArray &&rhs)
+  {
+    if (&rhs != this) {
+      devicePtr = (T *)std::malloc(rhs.len*sizeof(T));
+      std::memcpy(devicePtr, rhs.devicePtr, len*sizeof(T));
+      std::free(rhs.devicePtr);
+      rhs.devicePtr = nullptr;
+      rhs.len = 0;
+    }
+    return *this;
+  }
+
+  T *data()
+  { return devicePtr; }
+
+  const T *data() const
+  { return devicePtr; }
+
+  size_t size() const
+  { return len; }
+
+  void resize(size_t n)
+  {
+    if (n == len)
+      return;
+
+    T *temp{nullptr};
+    if (devicePtr && len > 0) {
+      temp = (T *)std::malloc(len*sizeof(T));
+      std::memcpy(temp, devicePtr, len*sizeof(T));
+      std::free(devicePtr);
+    }
+
+    devicePtr = (T *)std::malloc(n*sizeof(T));
+
+    if (temp) {
+      std::memcpy(devicePtr, temp, std::min(n, len)*sizeof(T));
+      std::free(temp);
+    }
+
+    len = n;
+  }
+
+ private:
+  T *devicePtr{nullptr};
+  size_t len{0};
+};
+
 #endif
 
 // ==================================================================
@@ -289,42 +397,49 @@ struct HostDeviceArray : public std::vector<T>
     if (index >= Base::size())
       resize(index+1);
 
+    std::unique_lock<std::mutex> l(mtx);
     updated = true;
     Base::operator[](index) = value;
   }
 
   void resize(size_t n)
   {
+    std::unique_lock<std::mutex> l(mtx);
     Base::resize(n);
     updated = true;
   }
 
   void push_back(const T &value)
   {
+    std::unique_lock<std::mutex> l(mtx);
     Base::push_back(value);
     updated = true;
   }
 
   void push_back(T &&value)
   {
+    std::unique_lock<std::mutex> l(mtx);
     Base::push_back(value);
     updated = true;
   }
 
   void resize(size_t n, const T &value)
   {
+    std::unique_lock<std::mutex> l(mtx);
     Base::resize(n, value);
     updated = true;
   }
 
   void reset(const void *data)
   {
+    std::unique_lock<std::mutex> l(mtx);
     memcpy(Base::data(), data, Base::size() * sizeof(T));
     updated = true;
   }
 
   T &operator[](size_t i)
   {
+    std::unique_lock<std::mutex> l(mtx);
     updated = true;
     return Base::operator[](i);
   }
@@ -355,6 +470,7 @@ struct HostDeviceArray : public std::vector<T>
     if (!updated)
       return;
 
+    std::unique_lock<std::mutex> l(mtx);
     deviceData.resize(Base::size());
 #ifdef WITH_CUDA
     CUDA_SAFE_CALL(cudaMemcpy(deviceData.data(),
@@ -374,6 +490,7 @@ struct HostDeviceArray : public std::vector<T>
 
   void updateOnHost()
   {
+    std::unique_lock<std::mutex> l(mtx);
     Base::resize(deviceData.size());
 #ifdef WITH_CUDA
     CUDA_SAFE_CALL(cudaMemcpy(Base::data(),
@@ -390,6 +507,8 @@ struct HostDeviceArray : public std::vector<T>
 #endif
     updated = false; // !
   }
+
+  std::mutex mtx;
 };
 
 // ==================================================================
@@ -415,6 +534,7 @@ struct DeviceObjectArray : private std::vector<T>
 
   DeviceObjectHandle alloc(const T &obj)
   {
+    std::unique_lock<std::mutex> l(mtx);
     Base::push_back(obj);
     updated = true;
     return (DeviceObjectHandle)(Base::size()-1);
@@ -427,6 +547,7 @@ struct DeviceObjectArray : private std::vector<T>
 
   void update(DeviceObjectHandle handle, const T &obj)
   {
+    std::unique_lock<std::mutex> l(mtx);
     Base::data()[handle] = obj;
     updated = true;
   }
@@ -443,6 +564,7 @@ struct DeviceObjectArray : private std::vector<T>
 
   void clear()
   {
+    std::unique_lock<std::mutex> l(mtx);
     Base::clear();
     freeHandles.clear();
     updated = true;
@@ -461,6 +583,7 @@ struct DeviceObjectArray : private std::vector<T>
   T *devicePtr()
   {
     if (updated) {
+      std::unique_lock<std::mutex> l(mtx);
       deviceData.resize(Base::size());
 #ifdef WITH_CUDA
       CUDA_SAFE_CALL(cudaMemcpy(deviceData.data(),
@@ -482,12 +605,10 @@ struct DeviceObjectArray : private std::vector<T>
   }
 
   std::vector<DeviceObjectHandle> freeHandles;
-#if defined(WITH_CUDA) || defined(WITH_HIP)
   DeviceArray<T> deviceData;
-#else
-  Base deviceData;
-#endif
   bool updated = true;
+
+  std::mutex mtx;
 };
 
 } // namespace visionaray

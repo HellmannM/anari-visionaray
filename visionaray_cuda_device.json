@@ -7,6 +7,7 @@
       "anari_core_objects_base_1_0",
       "khr_instance_transform",
       "khr_instance_motion_transform",
+      "khr_camera_omnidirectional",
       "khr_camera_orthographic",
       "khr_camera_perspective",
       "khr_camera_shutter",
@@ -22,11 +23,16 @@
       "khr_geometry_sphere",
       "khr_geometry_triangle",
       "khr_geometry_isosurface",
+      "khr_light_directional",
+      "khr_light_hdri",
+      "khr_light_point",
+      "khr_light_quad",
+      "khr_light_spot",
       "khr_material_matte",
       "khr_material_physically_based",
-      "khr_light_directional",
-      "khr_light_point",
-      "khr_light_hdri",
+      "khr_renderer_ambient_light",
+      "khr_renderer_background_color",
+      "khr_renderer_background_image",
       "khr_sampler_image1d",
       "khr_sampler_image2d",
       "khr_sampler_image3d",
@@ -197,6 +203,14 @@
           "description": "AO samples per-pixel, per-frame"
         },
         {
+          "name": "ambientOcclusionDistance",
+          "types": ["ANARI_FLOAT32"],
+          "tags": [],
+          "default": 1e20,
+          "minimum": 0,
+          "description": "ambient occlusion distance"
+        },
+        {
           "name": "ambientColor",
           "types": [
             "ANARI_FLOAT32_VEC3"
@@ -285,6 +299,37 @@
           "tags": [],
           "default": 0.1,
           "description": "heat map scaling factor"
+        },
+        {
+          "name": "ambientColor",
+          "types": [
+            "ANARI_FLOAT32_VEC3"
+          ],
+          "tags": [],
+          "default": [
+            1.0,
+            1.0,
+            1.0
+          ],
+          "description": "ambient light color (RGB)"
+        },
+        {
+          "name": "ambientRadiance",
+          "types": [
+            "ANARI_FLOAT32"
+          ],
+          "tags": [],
+          "default": 0.2,
+          "description": "ambient light intensity"
+        },
+        {
+          "name": "volumeSamplingRate",
+          "types": ["ANARI_FLOAT32"],
+          "tags": [],
+          "default": 0.5,
+          "minimum": 0.001,
+          "maximum": 10.0,
+          "description": "sampling rate of volumes when ray marching"
         }
       ]
     },

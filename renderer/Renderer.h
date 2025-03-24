@@ -3,6 +3,7 @@
 #include "DeviceArray.h"
 #include "Object.h"
 #include "array/Array1D.h"
+#include "array/Array2D.h"
 #include "scene/volume/spatial_field/SpatialField.h"
 #include "scene/volume/Volume.h"
 // impls
@@ -67,7 +68,8 @@ struct Renderer : public Object
   Renderer(VisionarayGlobalState *s);
   virtual ~Renderer() = default;
 
-  virtual void commit() override;
+  virtual void commitParameters() override;
+  virtual void finalize() override;
 
   static Renderer *createInstance(
       std::string_view subtype, VisionarayGlobalState *d);
@@ -80,7 +82,28 @@ struct Renderer : public Object
  protected:
   helium::ChangeObserverPtr<Array1D> m_clipPlanes;
   HostDeviceArray<float4> m_clipPlanesOnDevice;
+#ifdef WITH_CUDA
+  cuda_texture<vector<4, unorm<8>>, 2> m_bgTexture;
+#elif defined(WITH_HIP)
+  hip_texture<vector<4, unorm<8>>, 2> m_bgTexture;
+#else
+  texture<vector<4, unorm<8>>, 2> m_bgTexture;
+#endif
   VisionarayRenderer vrend;
+
+  helium::IntrusivePtr<Array2D> m_bgImage;
+  float4 m_bgColor{float3{0.f}, 1.f};
+  float3 m_ambientColor{1.f, 1.f, 1.f};
+  float m_ambientRadiance{0.2f};
+  std::string m_renderMode{"default"};
+  bool m_gradientShading{false};
+  float m_volumeSamplingRate{0.5f};
+  bool m_heatMapEnabled{false};
+  float m_heatMapScale{0.1f};
+  bool m_taaEnabled{false};
+  float m_taaAlpha{0.3f};
+  float m_scatterFraction{0.5f};
+  float m_scatterSigma{50.f};
 };
 
 } // namespace visionaray

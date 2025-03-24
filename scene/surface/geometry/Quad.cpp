@@ -15,10 +15,9 @@ Quad::Quad(VisionarayGlobalState *s)
   vgeom.type = dco::Geometry::Quad;
 }
 
-void Quad::commit()
+void Quad::commitParameters()
 {
-  Geometry::commit();
-
+  Geometry::commitParameters();
   m_index = getParamObject<Array1D>("primitive.index");
   m_vertexPosition = getParamObject<Array1D>("vertex.position");
   m_vertexNormal = getParamObject<Array1D>("vertex.normal");
@@ -28,6 +27,11 @@ void Quad::commit()
   m_vertexAttributes[2] = getParamObject<Array1D>("vertex.attribute2");
   m_vertexAttributes[3] = getParamObject<Array1D>("vertex.attribute3");
   m_vertexAttributes[4] = getParamObject<Array1D>("vertex.color");
+}
+
+void Quad::finalize()
+{
+  Geometry::finalize();
 
   if (!m_vertexPosition) {
     reportMessage(ANARI_SEVERITY_WARNING,
@@ -38,8 +42,13 @@ void Quad::commit()
   unsigned nextID = 0;
   auto addTriangles = [&](basic_triangle<3, float> &tri1,
                           basic_triangle<3, float> &tri2) {
-    if (length(tri1.e1) > 0.f && length(tri1.e2) > 0.f &&
-        length(tri2.e1) > 0.f && length(tri2.e2) > 0.f) {
+    //if (length(tri1.e1) > 0.f && length(tri1.e2) > 0.f &&
+    //    length(tri2.e1) > 0.f && length(tri2.e2) > 0.f) {
+    //if (length(tri.e1) > 0.f && length(tri.e2) > 0.f) {
+    // TODO: we can discard invalid primitives here, but
+    // then also have to make sure to also discard vertex
+    // attributes (at least, iff we don't have indices!)
+    if (true) {
       unsigned primID = nextID++;
       tri1.prim_id = primID;
       tri2.prim_id = primID;

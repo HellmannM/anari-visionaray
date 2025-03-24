@@ -11,7 +11,8 @@ struct UnstructuredField : public SpatialField
 {
   UnstructuredField(VisionarayGlobalState *d);
 
-  void commit() override;
+  void commitParameters() override;
+  void finalize() override;
 
   bool isValid() const override;
 
@@ -33,7 +34,7 @@ struct UnstructuredField : public SpatialField
 #ifdef WITH_CUDA
   cuda_index_bvh<dco::UElem> m_samplingBVH;
 #else
-  index_bvh4<dco::UElem> m_samplingBVH;
+  bvh4<dco::UElem> m_samplingBVH;
 #endif
 
   struct Parameters

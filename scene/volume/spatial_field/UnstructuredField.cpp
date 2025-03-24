@@ -10,14 +10,17 @@ UnstructuredField::UnstructuredField(VisionarayGlobalState *d)
   vfield.type = dco::SpatialField::Unstructured;
 }
 
-void UnstructuredField::commit()
+void UnstructuredField::commitParameters()
 {
   m_params.vertexPosition = getParamObject<Array1D>("vertex.position");
   m_params.vertexData = getParamObject<Array1D>("vertex.data");
   m_params.index = getParamObject<Array1D>("index");
   m_params.cellIndex = getParamObject<Array1D>("cell.index");
   m_params.cellType = getParamObject<Array1D>("cell.type");
+}
 
+void UnstructuredField::finalize()
+{
   if (!m_params.vertexPosition) {
     reportMessage(ANARI_SEVERITY_WARNING,
         "missing required parameter 'vertex.position' on unstructured spatial field");
@@ -205,7 +208,7 @@ void UnstructuredField::commit()
   builder.enable_spatial_splits(false);
 
   auto samplingBVH2 = builder.build(
-    index_bvh<dco::UElem>{}, m_elements.data(), m_elements.size());
+    bvh<dco::UElem>{}, m_elements.data(), m_elements.size());
 
   bvh_collapser collapser;
   collapser.collapse(samplingBVH2, m_samplingBVH, deviceState()->threadPool);
@@ -214,7 +217,7 @@ void UnstructuredField::commit()
 #endif
 
   vfield.voxelSpaceTransform = mat4x3(mat3::identity(),vec3f(0.f));
-  setGradientDelta(minCellDiagonal);
+  setCellSize(minCellDiagonal);
 
   buildGrid();
 
@@ -251,7 +254,7 @@ __global__ void UnstructuredField_buildGridGPU(dco::GridAccel    vaccel,
                                                const vec4f      *vertices,
                                                const dco::UElem *elements,
                                                size_t            numElems,
-                                               float             delta)
+                                               float             cellSize)
 {
   size_t cellID = blockIdx.x * size_t(blockDim.x) + threadIdx.x;
 
@@ -285,7 +288,7 @@ __global__ void UnstructuredField_buildGridGPU(dco::GridAccel    vaccel,
         // a macrocell neighborhood:
         //updateMCStepSize(
         //    mcID,vaccel.dims,length(cellBounds.max-cellBounds.min),vaccel.stepSizes);
-        updateMCStepSize(mcID,vaccel.dims,delta,vaccel.stepSizes);
+        updateMCStepSize(mcID,vaccel.dims,cellSize,vaccel.stepSizes);
       }
     }
   }
@@ -304,7 +307,7 @@ void UnstructuredField::buildGrid()
   size_t numThreads = 1024;
   size_t numElems = m_elements.size();
   UnstructuredField_buildGridGPU<<<div_up(numElems, numThreads), numThreads>>>(
-    vaccel, m_vertices.devicePtr(), m_elements.devicePtr(), numElems, vfield.delta);
+    vaccel, m_vertices.devicePtr(), m_elements.devicePtr(), numElems, vfield.cellSize);
 #else
   int3 dims{64, 64, 64};
   box3f worldBounds = {bounds().min,bounds().max};
@@ -354,7 +357,7 @@ void UnstructuredField::buildGrid()
           //updateMCStepSize(
           //    mcID,vaccel.dims,length(cellBounds.max-cellBounds.min),vaccel.stepSizes);
           updateMCStepSize(
-              mcID,vaccel.dims,vfield.delta,vaccel.stepSizes);
+              mcID,vaccel.dims,vfield.cellSize,vaccel.stepSizes);
         }
       }
     }

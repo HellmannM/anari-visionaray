@@ -75,21 +75,36 @@ VisionarayGlobalState *Frame::deviceState() const
   return (VisionarayGlobalState *)helium::BaseObject::m_state;
 }
 
-void Frame::commit()
+void Frame::commitParameters()
 {
   m_renderer = getParamObject<Renderer>("renderer");
+  m_camera = getParamObject<Camera>("camera");
+  m_world = getParamObject<World>("world");
+
+  m_frameData.size = getParam<uint2>("size", uint2(10));
+  m_colorType = getParam<anari::DataType>("channel.color", ANARI_UNKNOWN);
+  m_depthType = getParam<anari::DataType>("channel.depth", ANARI_UNKNOWN);
+  m_originType = getParam<anari::DataType>("channel.origin", ANARI_UNKNOWN);
+  m_normalType = getParam<anari::DataType>("channel.normal", ANARI_UNKNOWN);
+  m_albedoType = getParam<anari::DataType>("channel.albedo", ANARI_UNKNOWN);
+  m_primIdType =
+      getParam<anari::DataType>("channel.primitiveId", ANARI_UNKNOWN);
+  m_objIdType = getParam<anari::DataType>("channel.objectId", ANARI_UNKNOWN);
+  m_instIdType = getParam<anari::DataType>("channel.instanceId", ANARI_UNKNOWN);
+}
+
+void Frame::finalize()
+{
   if (!m_renderer) {
     reportMessage(ANARI_SEVERITY_WARNING,
         "missing required parameter 'renderer' on frame");
   }
 
-  m_camera = getParamObject<Camera>("camera");
   if (!m_camera) {
     reportMessage(
         ANARI_SEVERITY_WARNING, "missing required parameter 'camera' on frame");
   }
 
-  m_world = getParamObject<World>("world");
   if (!m_world) {
     reportMessage(
         ANARI_SEVERITY_WARNING, "missing required parameter 'world' on frame");
@@ -98,22 +113,21 @@ void Frame::commit()
   m_valid = m_renderer && m_renderer->isValid() && m_camera
       && m_camera->isValid() && m_world && m_world->isValid();
 
-  vframe.colorType = getParam<anari::DataType>("channel.color", ANARI_UNKNOWN);
-  vframe.depthType = getParam<anari::DataType>("channel.depth", ANARI_UNKNOWN);
-  vframe.originType = getParam<anari::DataType>("channel.origin", ANARI_UNKNOWN);
-  vframe.normalType = getParam<anari::DataType>("channel.normal", ANARI_UNKNOWN);
-  vframe.albedoType = getParam<anari::DataType>("channel.albedo", ANARI_UNKNOWN);
-  vframe.primIdType =
-      getParam<anari::DataType>("channel.primitiveId", ANARI_UNKNOWN);
-  vframe.objIdType = getParam<anari::DataType>("channel.objectId", ANARI_UNKNOWN);
-  vframe.instIdType = getParam<anari::DataType>("channel.instanceId", ANARI_UNKNOWN);
-
-  vframe.size = getParam<uint2>("size", uint2(10));
+  vframe.size = m_frameData.size;
   vframe.invSize = 1.f / float2(vframe.size);
+  vframe.colorType = m_colorType;
+  vframe.depthType = m_depthType;
+  vframe.originType = m_originType;
+  vframe.normalType = m_normalType;
+  vframe.albedoType = m_albedoType;
+  vframe.primIdType = m_primIdType;
+  vframe.objIdType = m_objIdType;
+  vframe.instIdType = m_instIdType;
 
   const auto numPixels = vframe.size.x * vframe.size.y;
 
-  vframe.stochasticRendering = m_renderer->stochasticRendering();
+  if (m_renderer)
+    vframe.stochasticRendering = m_renderer->stochasticRendering();
 
   vframe.perPixelBytes = 4 * (vframe.colorType == ANARI_FLOAT32_VEC4 ? 4 : 1);
   m_pixelBuffer.resize(numPixels * vframe.perPixelBytes);
@@ -201,11 +215,11 @@ void Frame::renderFrame()
 #elif defined(WITH_HIP)
   HIP_SAFE_CALL(hipEventRecord(m_eventStart));
 #else
-  m_future = async<void>([&, state, this]() {
+  m_future = async<void>([&, state]() {
     m_eventStart = std::chrono::steady_clock::now();
     state->renderingSemaphore.frameStart();
 #endif
-    state->commitBufferFlush();
+    state->commitBuffer.flush();
 
     if (!isValid()) {
       reportMessage(
@@ -222,7 +236,7 @@ void Frame::renderFrame()
     }
 
 #if !defined(WITH_CUDA) && !defined(WITH_HIP)
-    if (state->commitBufferLastFlush() <= m_frameLastRendered) {
+    if (state->commitBuffer.lastObjectFinalization() <= m_frameLastRendered) {
       if (!m_renderer->stochasticRendering()) {
         state->renderingSemaphore.frameEnd();
         return;
@@ -238,6 +252,7 @@ void Frame::renderFrame()
     if (checkTAAReset())
       dispatch();
 
+    auto worldLock = m_world->scopeLockObject();
     m_world->visionaraySceneUpdate();
 
     mapBuffersOnDevice();
@@ -488,18 +503,21 @@ void Frame::checkAccumulationReset()
     return;
 
   auto &state = *deviceState();
-  if (m_lastCommitOccured < state.commitBufferLastFlush()) {
-    m_lastCommitOccured = state.commitBufferLastFlush();
+  if (m_lastCommitOccured < state.commitBuffer.lastObjectFinalization()) {
+    m_lastCommitOccured = state.commitBuffer.lastObjectFinalization();
     m_nextFrameReset = true;
   }
-  // if (m_lastUploadOccured < state.uploadBuffer.lastFlush()) {
-  //   m_lastUploadOccured = state.uploadBuffer.lastFlush();
+  // if (m_lastUploadOccured < state.uploadBuffer.lastObjectFinalization()) {
+  //   m_lastUploadOccured = state.uploadBuffer.lastObjectFinalization();
   //   m_nextFrameReset = true;
   // }
 }
 
 bool Frame::checkTAAReset()
 {
+  if (!isValid())
+    return false;
+
   const auto numPixels = vframe.size.x * vframe.size.y;
   const float alpha = m_renderer->visionarayRenderer().rendererState.taaAlpha;
 

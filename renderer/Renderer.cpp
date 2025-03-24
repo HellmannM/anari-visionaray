@@ -5,6 +5,7 @@
 #include "DirectLight.h"
 #include "DRR.h"
 #include "Renderer.h"
+#include "scene/surface/material/sampler/common.h" // for imageSamplerUpdateData (TODO!)
 
 namespace visionaray {
 
@@ -16,65 +17,112 @@ Renderer::Renderer(VisionarayGlobalState *s)
 {
 }
 
-void Renderer::commit()
+void Renderer::commitParameters()
 {
-  // variables supported by ALL renderers
-  auto commitCommonState = [this](auto &state) {
-    m_clipPlanes = getParamObject<Array1D>("clipPlane");
-    if (m_clipPlanes) {
-      m_clipPlanesOnDevice.resize(m_clipPlanes->size());
-      for (size_t i=0; i<m_clipPlanes->size(); ++i) {
-        m_clipPlanesOnDevice[i] = m_clipPlanes->beginAs<float4>()[i];
-      }
-      state.clipPlanes = m_clipPlanesOnDevice.devicePtr();
-      state.numClipPlanes = (unsigned)m_clipPlanesOnDevice.size();
-    } else {
-      state.clipPlanes = nullptr;
-      state.numClipPlanes = 0;
+  m_clipPlanes = getParamObject<Array1D>("clipPlane");
+  m_bgImage = getParamObject<Array2D>("background");
+  m_bgColor = getParam<float4>("background", float4(float3(0.f), 1.f));
+  m_ambientColor = getParam<vec3>("ambientColor", vec3(1.f));
+  m_ambientRadiance = getParam<float>("ambientRadiance", 0.2f);
+  m_renderMode = getParamString("mode", "default");
+  m_gradientShading = getParam<bool>("gradientShading", false);
+  m_volumeSamplingRate = getParam<float>("volumeSamplingRate", 0.5f);
+  m_heatMapEnabled = getParam<bool>("heatMapEnabled", false);
+  m_heatMapScale = getParam<float>("heatMapScale", 0.1f);
+  m_taaEnabled = getParam<bool>("taa", false);
+  m_taaAlpha = getParam<float>("taaAlpha", 0.3f);
+  m_scatterFraction = getParam<float>("scatterFraction", 0.5f);
+  m_scatterSigma = getParam<float>("scatterSigma", 50.f);
+}
+
+void Renderer::finalize()
+{
+  m_clipPlanes = getParamObject<Array1D>("clipPlane");
+  if (m_clipPlanes) {
+    m_clipPlanesOnDevice.resize(m_clipPlanes->size());
+    for (size_t i=0; i<m_clipPlanes->size(); ++i) {
+      m_clipPlanesOnDevice[i] = m_clipPlanes->beginAs<float4>()[i];
+    }
+    vrend.rendererState.clipPlanes = m_clipPlanesOnDevice.devicePtr();
+    vrend.rendererState.numClipPlanes = (unsigned)m_clipPlanesOnDevice.size();
+  } else {
+    vrend.rendererState.clipPlanes = nullptr;
+    vrend.rendererState.numClipPlanes = 0;
+  }
+
+  memset(&vrend.rendererState.bgImage, 0, sizeof(vrend.rendererState.bgImage));
+
+  if (m_bgImage) {
+#if defined(WITH_CUDA) || defined(WITH_HIP)
+    texture<vector<4, unorm<8>>, 2> tex(m_bgImage->size().x, m_bgImage->size().y);
+#else
+    m_bgTexture
+        = texture<vector<4, unorm<8>>, 2>(m_bgImage->size().x, m_bgImage->size().y);
+    auto &tex = m_bgTexture;
+#endif
+
+    if (!imageSamplerUpdateData(tex, m_bgImage)) { // TODO: move this function upwards
+      reportMessage(ANARI_SEVERITY_WARNING,
+          "unsupported element type for background image: %s",
+          anari::toString(m_bgImage->elementType()));
+      return;
     }
 
-    state.bgColor = getParam<float4>("background", float4(float3(0.f), 1.f));
-    state.ambientColor = getParam<vec3>("ambientColor", vec3(1.f));
-    state.ambientRadiance = getParam<float>("ambientRadiance", 0.2f);
-    std::string renderMode = getParamString("mode", "default");
-    if (renderMode == "default")
-      state.renderMode = RenderMode::Default;
-    else if (renderMode == "Ng")
-      state.renderMode = RenderMode::Ng;
-    else if (renderMode == "Ns")
-      state.renderMode = RenderMode::Ns;
-    else if (renderMode == "tangent")
-      state.renderMode = RenderMode::Tangent;
-    else if (renderMode == "bitangent")
-      state.renderMode = RenderMode::Bitangent;
-    else if (renderMode == "albedo")
-      state.renderMode = RenderMode::Albedo;
-    else if (renderMode == "motionVec")
-      state.renderMode = RenderMode::MotionVec;
-    else if (renderMode == "geometry.attribute0")
-      state.renderMode = RenderMode::GeometryAttribute0;
-    else if (renderMode == "geometry.attribute1")
-      state.renderMode = RenderMode::GeometryAttribute1;
-    else if (renderMode == "geometry.attribute2")
-      state.renderMode = RenderMode::GeometryAttribute2;
-    else if (renderMode == "geometry.attribute3")
-      state.renderMode = RenderMode::GeometryAttribute3;
-    else if (renderMode == "geometry.color")
-      state.renderMode = RenderMode::GeometryColor;
-    state.heatMapEnabled = getParam<bool>("heatMapEnabled", false);
-    state.heatMapScale = getParam<float>("heatMapScale", 0.1f);
-    state.taaEnabled = getParam<bool>("taa", false);
-    state.taaAlpha = getParam<float>("taaAlpha", 0.3f);
-    state.scatterFraction = getParam<float>("scatterFraction", 0.5f);
-    state.scatterSigma = getParam<float>("scatterSigma", 50.f);
-  };
+    tex.set_filter_mode(Linear);
+    tex.set_address_mode(0, Clamp);
+    tex.set_address_mode(1, Clamp);
 
-  commitCommonState(vrend.rendererState);
-  if (vrend.type == VisionarayRenderer::DirectLight) {
-    vrend.rendererState.occlusionDistance = getParam<float>("ambientOcclusionDistance", 1e20f);
-    vrend.rendererState.ambientSamples = clamp(getParam<int>("ambientSamples", 1), 0, 256);
-    vrend.rendererState.pixelSamples = clamp(getParam<int>("pixelSamples", 1), 1, 256);
+#ifdef WITH_CUDA
+    m_bgTexture = cuda_texture<vector<4, unorm<8>>, 2>(tex);
+#elif defined(WITH_HIP)
+    m_bgTexture = hip_texture<vector<4, unorm<8>>, 2>(tex);
+#endif
+
+#ifdef WITH_CUDA
+  vrend.rendererState.bgImage = cuda_texture_ref<vector<4, unorm<8>>, 2>(m_bgTexture);
+#elif defined(WITH_HIP)
+  vrend.rendererState.bgImage = hip_texture_ref<vector<4, unorm<8>>, 2>(m_bgTexture);
+#else
+  vrend.rendererState.bgImage = texture_ref<vector<4, unorm<8>>, 2>(m_bgTexture);
+#endif
   }
+
+  vrend.rendererState.bgColor = m_bgColor;
+  vrend.rendererState.ambientColor = m_ambientColor;
+  vrend.rendererState.ambientRadiance = m_ambientRadiance;
+  if (m_renderMode == "default")
+    vrend.rendererState.renderMode = RenderMode::Default;
+  else if (m_renderMode == "Ng")
+    vrend.rendererState.renderMode = RenderMode::Ng;
+  else if (m_renderMode == "Ns")
+    vrend.rendererState.renderMode = RenderMode::Ns;
+  else if (m_renderMode == "tangent")
+    vrend.rendererState.renderMode = RenderMode::Tangent;
+  else if (m_renderMode == "bitangent")
+    vrend.rendererState.renderMode = RenderMode::Bitangent;
+  else if (m_renderMode == "albedo")
+    vrend.rendererState.renderMode = RenderMode::Albedo;
+  else if (m_renderMode == "motionVec")
+    vrend.rendererState.renderMode = RenderMode::MotionVec;
+  else if (m_renderMode == "geometry.attribute0")
+    vrend.rendererState.renderMode = RenderMode::GeometryAttribute0;
+  else if (m_renderMode == "geometry.attribute1")
+    vrend.rendererState.renderMode = RenderMode::GeometryAttribute1;
+  else if (m_renderMode == "geometry.attribute2")
+    vrend.rendererState.renderMode = RenderMode::GeometryAttribute2;
+  else if (m_renderMode == "geometry.attribute3")
+    vrend.rendererState.renderMode = RenderMode::GeometryAttribute3;
+  else if (m_renderMode == "geometry.color")
+    vrend.rendererState.renderMode = RenderMode::GeometryColor;
+  vrend.rendererState.gradientShading = m_gradientShading;
+  auto safe_rcp = [](float f) { return f > 0.f ? 1.f/f : 0.f; };
+  vrend.rendererState.volumeSamplingRateInv = safe_rcp(m_volumeSamplingRate);
+  vrend.rendererState.heatMapEnabled = m_heatMapEnabled;
+  vrend.rendererState.heatMapScale = m_heatMapScale;
+  vrend.rendererState.taaEnabled = m_taaEnabled;
+  vrend.rendererState.taaAlpha = m_taaAlpha;
+  vrend.rendererState.scatterFraction = m_scatterFraction;
+  vrend.rendererState.scatterSigma = m_scatterSigma;
 }
 
 Renderer *Renderer::createInstance(std::string_view subtype, VisionarayGlobalState *s)

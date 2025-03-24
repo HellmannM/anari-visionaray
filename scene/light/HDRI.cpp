@@ -98,14 +98,19 @@ HDRI::~HDRI()
     backgroundID = -1; // reset!
 }
 
-void HDRI::commit()
+void HDRI::commitParameters()
 {
-  Light::commit();
+  Light::commitParameters();
   m_up = getParam<vec3>("up", vec3(1.f, 0.f, 0.f));
   m_direction = getParam<vec3>("direction", vec3(0.f, 0.f, 1.f));
   m_scale = getParam<float>("scale", 1.f);
 
   m_radiance = getParamObject<Array2D>("radiance");
+}
+
+void HDRI::finalize()
+{
+  Light::finalize();
 
   if (!m_radiance) {
     reportMessage(ANARI_SEVERITY_WARNING,
@@ -144,6 +149,11 @@ void HDRI::commit()
   vlight.asHDRI.radiance = texture_ref<float4, 2>(m_radianceTexture);
 #endif
   vlight.asHDRI.scale = m_scale;
+  vlight.asHDRI.toWorld.col1 = -normalize(m_up);
+  vlight.asHDRI.toWorld.col0 =  normalize(cross(vlight.asHDRI.toWorld.col1,m_direction));
+  vlight.asHDRI.toWorld.col2 =  normalize(cross(vlight.asHDRI.toWorld.col0,
+                                                vlight.asHDRI.toWorld.col1));
+  vlight.asHDRI.toLocal = inverse(vlight.asHDRI.toWorld);
   vlight.asHDRI.cdf.lastCol = m_cdfRows.devicePtr();
   vlight.asHDRI.cdf.rows = m_cdfLastCol.devicePtr();
   vlight.asHDRI.cdf.width = width;

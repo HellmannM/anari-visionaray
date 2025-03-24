@@ -52,9 +52,7 @@ bool shade(ScreenSample &ss, Ray &ray, unsigned worldID,
     if (!hitRec.hit) {
       if (rendererState.envID >= 0 && onDevice.lights[rendererState.envID].visible) {
         auto hdri = onDevice.lights[rendererState.envID].asHDRI;
-        float2 uv = toUV(ray.dir);
-        // TODO: type not supported with cuda?!
-        throughput = tex2D(hdri.radiance, uv).xyz();
+        throughput = hdri.intensity(ray.dir);
         hdriMiss = true;
       } else {
         throughput = float3{0.f};
@@ -67,7 +65,7 @@ bool shade(ScreenSample &ss, Ray &ray, unsigned worldID,
 
     if (hitRec.lightHit) {
       hitPos = ray.ori + hrl.t * ray.dir;
-      const dco::Light &light = onDevice.lights[world.allLights[hrl.lightID]];
+      const dco::Light &light = getLight(world.allLights, hrl.lightID, onDevice);
       if (light.type == dco::Light::Quad)
         throughput = light.asQuad.intensity(hitPos);
       hdriMiss = true; // TODO?!
@@ -83,7 +81,7 @@ bool shade(ScreenSample &ss, Ray &ray, unsigned worldID,
       eps = epsilonFrom(hitPos, ray.dir, hrv.t);
       viewDir = -ray.dir;
 
-      const dco::Volume &vol = onDevice.volumes[group.volumes[hrv.volID]];
+      const dco::Volume &vol = onDevice.volumes[group.volumes[hrv.localID]];
 
       if (rendererState.gradientShading) {
         if (sampleGradient(vol.field,hitPos,gn))
@@ -98,7 +96,7 @@ bool shade(ScreenSample &ss, Ray &ray, unsigned worldID,
       color.xyz() = hrv.albedo;
 
       result.depth = hrv.t;
-      result.objId = group.objIds[hrv.volID];
+      result.objId = group.objIds[hrv.localID];
       result.instId = inst.userID;
     } else {
       result.depth = hr.t;
@@ -114,7 +112,7 @@ bool shade(ScreenSample &ss, Ray &ray, unsigned worldID,
       eps = epsilonFrom(hitPos, ray.dir, hr.t);
 
       for (int i=0; i<5; ++i) {
-        attribs[i] = getAttribute(geom, (dco::Attribute)i, hr.prim_id, uv);
+        attribs[i] = getAttribute(geom, inst, (dco::Attribute)i, hr.prim_id, uv);
       }
 
       viewDir = -ray.dir;
@@ -156,7 +154,7 @@ bool shade(ScreenSample &ss, Ray &ray, unsigned worldID,
 
     if (world.numLights > 0) {
       int lightID = uniformSampleOneLight(ss.random, world.numLights);
-      const dco::Light &light = onDevice.lights[world.allLights[lightID]];
+      const dco::Light &light = getLight(world.allLights, lightID, onDevice);
       ls = sampleLight(light, hitPos, ss.random);
     }
 
@@ -173,13 +171,13 @@ bool shade(ScreenSample &ss, Ray &ray, unsigned worldID,
                                      nullptr, // attribs, not used..
                                      UINT_MAX, // primID, not used..
                                      gn, gn,
-                                     viewDir,
-                                     ls.dir,
-                                     ls.intensity);
-          shadedColor = shadedColor * safe_rcp(ls.pdf) * safe_rcp(1.f/ls.dist2);
+                                     normalize(viewDir),
+                                     normalize(ls.dir),
+                                     ls.intensity * safe_rcp(ls.dist2));
+          shadedColor = shadedColor * safe_rcp(ls.pdf);
         }
         else
-          shadedColor = hrv.albedo * ls.intensity * safe_rcp(ls.pdf) * safe_rcp(1.f/ls.dist2);
+          shadedColor = hrv.albedo * ls.intensity * safe_rcp(ls.pdf) * safe_rcp(ls.dist2);
       } else {
         const auto &geom = onDevice.geometries[group.geoms[hr.geom_id]];
         const auto &mat = onDevice.materials[group.materials[hr.geom_id]];
@@ -189,10 +187,10 @@ bool shade(ScreenSample &ss, Ray &ray, unsigned worldID,
                                    attribs,
                                    hr.prim_id,
                                    gn, sn,
-                                   viewDir,
-                                   ls.dir,
-                                   ls.intensity);
-        shadedColor = shadedColor * safe_rcp(ls.pdf) * safe_rcp(1.f/ls.dist2);
+                                   normalize(viewDir),
+                                   normalize(ls.dir),
+                                   ls.intensity * safe_rcp(ls.dist2));
+        shadedColor = shadedColor * safe_rcp(ls.pdf);
       }
     }
     else if (rendererState.renderMode == RenderMode::Ng)
@@ -309,8 +307,11 @@ void VisionarayRendererDirectLight::renderFrame(const dco::Frame &frame,
         Random rng(pixelID, rendererState.accumID);
         ScreenSample ss{x, y, frameID, size, rng};
         Ray ray;
-
+#ifdef _MSC_VER
+        uint64_t clock_begin = clock();
+#else
         uint64_t clock_begin = clock64();
+#endif
 
         float4 accumColor{0.f};
         PixelSample closestSample;
@@ -334,7 +335,10 @@ void VisionarayRendererDirectLight::renderFrame(const dco::Frame &frame,
           // if (ss.debug()) printf("Rendering frame ==== %u\n", rendererState.accumID);
 
           PixelSample ps;
-          ps.color = rendererState.bgColor;
+          if (rendererState.bgImage.width())
+            ps.color = tex2D(rendererState.bgImage,float2(xf/size.x,yf/size.y));
+          else
+            ps.color = rendererState.bgColor;
           ps.depth = 1e31f;
           ps.albedo = float3(0.f);
           ps.motionVec = float4(0,0,0,1);
@@ -375,7 +379,11 @@ void VisionarayRendererDirectLight::renderFrame(const dco::Frame &frame,
           }
         }
 
+#ifdef _MSC_VER
+        uint64_t clock_end = clock();
+#else
         uint64_t clock_end = clock64();
+#endif
         if (rendererState.heatMapEnabled > 0.f) {
             float t = (clock_end - clock_begin)
                 * (rendererState.heatMapScale / spp);

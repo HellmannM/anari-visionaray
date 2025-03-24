@@ -25,17 +25,31 @@ TransferFunction1D::~TransferFunction1D()
 {
 }
 
-void TransferFunction1D::commit()
+void TransferFunction1D::commitParameters()
 {
-  Volume::commit();
+  Volume::commitParameters();
 
   m_field = getParamObject<SpatialField>("value");
-
   if (!m_field) {
     // Some apps might still use "field" (from the provisional specs)
     m_field = getParamObject<SpatialField>("field");
   }
 
+  m_valueRange = getParam<box1>("valueRange", box1(0.f, 1.f));
+
+  m_colorData = getParamObject<Array1D>("color");
+  m_uniformColor = float4(1.f);
+  getParam("color", ANARI_FLOAT32_VEC3, &m_uniformColor);
+  getParam("color", ANARI_FLOAT32_VEC4, &m_uniformColor);
+
+  m_opacityData = getParamObject<Array1D>("opacity");
+  m_uniformOpacity = getParam<float>("opacity", 1.f) * m_uniformColor.w;
+
+  m_unitDistance = getParam<float>("unitDistance", 1.f);
+}
+
+void TransferFunction1D::finalize()
+{
   if (!m_field) {
     reportMessage(ANARI_SEVERITY_WARNING,
         "no spatial field provided to transferFunction1D volume");
@@ -50,50 +64,52 @@ void TransferFunction1D::commit()
 
   m_bounds = m_field->bounds();
 
-  m_valueRange = getParam<box1>("valueRange", box1(0.f, 1.f));
-
-  m_colorData = getParamObject<Array1D>("color");
-  m_opacityData = getParamObject<Array1D>("opacity");
-  float densityScale = 1.f; // old, some apps may still use this!
-  if (getParam("densityScale", ANARI_FLOAT32, &densityScale))
-    m_unitDistance = densityScale;
-  else
-    m_unitDistance = getParam<float>("unitDistance", 1.f);
-
-  if (!m_colorData) {
-    reportMessage(ANARI_SEVERITY_WARNING,
-        "no color data provided to transferFunction1D volume");
-    return;
+  size_t numColorChannels{4};
+  if (m_colorData) { // TODO: more types
+    if (m_colorData->elementType() == ANARI_FLOAT32_VEC3)
+      numColorChannels = 3;
   }
 
-  if (!m_opacityData) {
-    reportMessage(ANARI_SEVERITY_WARNING,
-        "no opacity data provided to transfer function");
-    return;
-  }
+  float *colorData = m_colorData ? (float *)m_colorData->data() : nullptr;
+  float *opacityData = m_opacityData ? (float *)m_opacityData->data() : nullptr;
 
-  auto *colorData = m_colorData->beginAs<vec3>();
-  auto *opacityData = m_opacityData->beginAs<float>();
-
-  size_t tfSize = max(m_colorData->size(), m_opacityData->size());
+  size_t numColors = m_colorData ? m_colorData->size() : 1;
+  size_t numOpacities = m_opacityData ? m_opacityData->size() : 1;
+  size_t tfSize = max(numColors, numOpacities);
 
   std::vector<float4> tf(tfSize);
   for (size_t i=0; i<tfSize; ++i) {
-    float colorPos = tfSize > 1 ? (float(i)/(tfSize-1))*(m_colorData->size()-1) : 0.f;
+    float colorPos = tfSize > 1 ? (float(i)/(tfSize-1))*(numColors-1) : 0.f;
     float colorFrac = colorPos-floorf(colorPos);
 
-    vec3f color0 = colorData[int(floorf(colorPos))];
-    vec3f color1 = colorData[int(ceilf(colorPos))];
-    vec3f color = lerp(color0, color1, colorFrac);
+    float4 color0(m_uniformColor.xyz(), m_uniformOpacity);
+    float4 color1(m_uniformColor.xyz(), m_uniformOpacity);
+    if (colorData) {
+      if (numColorChannels == 3) {
+        float3 *colors = (float3 *)colorData;
+        color0 = float4(colors[int(floorf(colorPos))], m_uniformOpacity);
+        color1 = float4(colors[int(ceilf(colorPos))], m_uniformOpacity);
+      }
+      else if (numColorChannels == 4) {
+        float4 *colors = (float4 *)colorData;
+        color0 = colors[int(floorf(colorPos))];
+        color1 = colors[int(ceilf(colorPos))];
+      }
+    }
 
-    float alphaPos = tfSize > 1 ? (float(i)/(tfSize-1))*(m_opacityData->size()-1) : 0.f;
-    float alphaFrac = alphaPos-floorf(alphaPos);
+    float4 color = lerp_r(color0, color1, colorFrac);
 
-    float alpha0 = opacityData[int(floorf(alphaPos))];
-    float alpha1 = opacityData[int(ceilf(alphaPos))];
-    float alpha = lerp(alpha0, alpha1, alphaFrac);
+    if (opacityData) {
+      float alphaPos = tfSize > 1 ? (float(i)/(tfSize-1))*(numOpacities-1) : 0.f;
+      float alphaFrac = alphaPos-floorf(alphaPos);
 
-    tf[i] = vec4(color, alpha);
+      float alpha0 = opacityData[int(floorf(alphaPos))];
+      float alpha1 = opacityData[int(ceilf(alphaPos))];
+
+      color.w *= lerp_r(alpha0, alpha1, alphaFrac);
+    }
+
+    tf[i] = color;
   }
 #if defined(WITH_CUDA) || defined(WITH_HIP)
   texture<float4, 1> tex(tf.size());
@@ -130,16 +146,16 @@ void TransferFunction1D::commit()
     m_field->gridAccel().computeMaxOpacities(vvol.asTransferFunction1D);
 }
 
-void TransferFunction1D::markCommitted()
+void TransferFunction1D::markFinalized()
 {
-  Object::markCommitted();
+  Object::markFinalized();
   deviceState()->objectUpdates.lastBLSCommitSceneRequest =
       helium::newTimeStamp();
 }
 
 bool TransferFunction1D::isValid() const
 {
-  return m_field && m_field->isValid() && m_colorData && m_opacityData;
+  return m_field && m_field->isValid();
 }
 
 aabb TransferFunction1D::bounds() const

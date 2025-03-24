@@ -18,8 +18,8 @@ add_subdirectory(external)
 
 # note: we're often tracking the most recent changes from ANARI-SDK
 # (on branch "next_release")
-find_package(anari 0.12.1 REQUIRED)
-find_package(visionaray 0.4.2 REQUIRED)
+find_package(anari 0.13.0 REQUIRED)
+find_package(visionaray 0.5.0 REQUIRED)
 
 option(ANARI_VISIONARAY_ENABLE_CUDA "Compile the CUDA device" OFF)
 set(cuda ${ANARI_VISIONARAY_ENABLE_CUDA})
@@ -69,6 +69,7 @@ endif()
 set(SOURCES
     camera/Camera.cpp
     camera/Matrix.cpp
+    camera/Omnidirectional.cpp
     camera/Orthographic.cpp
     camera/Perspective.cpp
     renderer/DirectLight.cpp
@@ -124,6 +125,9 @@ target_sources(${PROJECT_NAME} PRIVATE
   scene/volume/spatial_field/GridAccel.cpp
   scene/volume/spatial_field/UnstructuredField.cpp
 )
+if(WIN32)
+  target_compile_definitions(${PROJECT_NAME} PRIVATE _USE_MATH_DEFINES)
+endif()
 
 if (nanovdb)
   target_sources(${PROJECT_NAME} PRIVATE scene/volume/spatial_field/NanoVDBField.cpp)
@@ -142,6 +146,7 @@ target_link_libraries(${PROJECT_NAME} PUBLIC
 
 target_include_directories(${PROJECT_NAME} PUBLIC
   $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}>
+  $<BUILD_INTERFACE:${CMAKE_CURRENT_BINARY_DIR}>
 )
 
 if (cuda)
@@ -171,6 +176,9 @@ if (cuda)
     PROPERTIES COMPILE_FLAGS "--extended-lambda --expt-relaxed-constexpr"
   )
   target_compile_definitions(${PROJECT_NAME}_cuda PRIVATE WITH_CUDA=1)
+  if(WIN32)
+    target_compile_definitions(${PROJECT_NAME}_cuda PRIVATE _USE_MATH_DEFINES)
+  endif()
   if (nanovdb)
     target_sources(${PROJECT_NAME}_cuda PRIVATE
         scene/volume/spatial_field/NanoVDBField.cu)
@@ -196,6 +204,7 @@ if (cuda)
 
   target_include_directories(${PROJECT_NAME}_cuda PUBLIC
     $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}>
+    $<BUILD_INTERFACE:${CMAKE_CURRENT_BINARY_DIR}>
   )
 endif()
 
@@ -209,6 +218,9 @@ if (hip)
     scene/VisionaraySceneGPU.hip
   )
   target_compile_definitions(${PROJECT_NAME}_hip PRIVATE WITH_HIP=1)
+  if(WIN32)
+    target_compile_definitions(${PROJECT_NAME}_hip PRIVATE _USE_MATH_DEFINES)
+  endif()
   if (nanovdb)
     message(WARNING "No VDB support with HIP")
   endif()
@@ -226,6 +238,7 @@ if (hip)
 
   target_include_directories(${PROJECT_NAME}_hip PUBLIC
     $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}>
+    $<BUILD_INTERFACE:${CMAKE_CURRENT_BINARY_DIR}>
   )
 endif()
 

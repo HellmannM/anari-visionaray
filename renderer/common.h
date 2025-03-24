@@ -51,6 +51,13 @@ enum class RenderMode
 struct RendererState
 {
   float4 bgColor{float3(0.f), 1.f};
+#ifdef WITH_CUDA
+  cuda_texture_ref<vector<4, unorm<8>>, 2> bgImage;
+#elif defined(WITH_HIP)
+  hip_texture_ref<vector<4, unorm<8>>, 2> bgImage;
+#else
+  texture_ref<vector<4, unorm<8>>, 2> bgImage;
+#endif
   RenderMode renderMode{RenderMode::Default};
   float4 *clipPlanes{nullptr};
   unsigned numClipPlanes{0};
@@ -66,6 +73,7 @@ struct RendererState
   mat4 currPR{mat4::identity()};
   // Volume
   bool gradientShading{false};
+  float volumeSamplingRateInv{2.0f};
   // AO
   float3 ambientColor{1.f, 1.f, 1.f};
   float ambientRadiance{0.2f};
@@ -74,6 +82,7 @@ struct RendererState
   // Heat map
   bool heatMapEnabled{false};
   float heatMapScale{.1f};
+  // DRR scatter
   float scatterFraction{0.5f};
   float scatterSigma{50.f};
 };
@@ -223,7 +232,7 @@ inline void getNormals(const dco::Geometry &geom,
       vec3 n1 = normals[index.x];
       vec3 n2 = normals[index.y];
       vec3 n3 = normals[index.z];
-      Ns = lerp(n1, n2, n3, uv.x, uv.y);
+      Ns = lerp_r(n1, n2, n3, uv.x, uv.y);
       Ns = normalize(Ns);
     } else {
       Ns = Ng;
@@ -296,13 +305,13 @@ inline vec4 getTangent(
         vec3 tng1 = tangents[index.x];
         vec3 tng2 = tangents[index.y];
         vec3 tng3 = tangents[index.z];
-        tng = vec4(lerp(tng1, tng2, tng3, uv.x, uv.y), 1.f);
+        tng = vec4(lerp_r(tng1, tng2, tng3, uv.x, uv.y), 1.f);
       } else if (geom.tangent.typeInfo.dataType == ANARI_FLOAT32_VEC4) {
         auto *tangents = (const vec4 *)geom.tangent.data;
         vec4 tng1 = tangents[index.x];
         vec4 tng2 = tangents[index.y];
         vec4 tng3 = tangents[index.z];
-        tng = lerp(tng1, tng2, tng3, uv.x, uv.y);
+        tng = lerp_r(tng1, tng2, tng3, uv.x, uv.y);
       }
     }
   }
@@ -311,8 +320,11 @@ inline vec4 getTangent(
 }
 
 VSNRAY_FUNC
-inline vec4 getAttribute(
-    const dco::Geometry &geom, dco::Attribute attrib, unsigned primID, const vec2 uv)
+inline vec4 getAttribute(const dco::Geometry &geom,
+                         const dco::Instance &inst,
+                         dco::Attribute attrib,
+                         unsigned primID,
+                         const vec2 uv)
 {
   vec4f color{0.f, 0.f, 0.f, 1.f};
 
@@ -321,6 +333,8 @@ inline vec4 getAttribute(
 
   dco::Array vertexColors = geom.vertexAttributes[(int)attrib];
   dco::Array primitiveColors = geom.primitiveAttributes[(int)attrib];
+  dco::Uniform geometryColor = geom.uniformAttributes[(int)attrib];
+  dco::Uniform instanceColor = inst.uniformAttributes[(int)attrib];
 
   const TypeInfo &vertexColorInfo = vertexColors.typeInfo;
   const TypeInfo &primitiveColorInfo = primitiveColors.typeInfo;
@@ -341,7 +355,7 @@ inline vec4 getAttribute(
       vec4f c1 = toRGBA(source1, vertexColorInfo);
       vec4f c2 = toRGBA(source2, vertexColorInfo);
       vec4f c3 = toRGBA(source3, vertexColorInfo);
-      color = lerp(c1, c2, c3, uv.x, uv.y);
+      color = lerp_r(c1, c2, c3, uv.x, uv.y);
     }
     else if (geom.type == dco::Geometry::Quad) {
       uint4 index = getQuadIndex(geom.index, primID);
@@ -362,9 +376,9 @@ inline vec4 getAttribute(
       vec4f c3 = toRGBA(source3, vertexColorInfo);
       vec4f c4 = toRGBA(source4, vertexColorInfo);
       if (primID%2==0)
-        color = lerp(c1, c2, c4, uv.x, uv.y);
+        color = lerp_r(c1, c2, c4, uv.x, uv.y);
       else
-        color = lerp(c3, c4, c2, 1.f-uv.x, 1.f-uv.y);
+        color = lerp_r(c3, c4, c2, 1.f-uv.x, 1.f-uv.y);
     }
     else if (geom.type == dco::Geometry::Sphere) {
       uint32_t index = getSphereIndex(geom.index, primID);
@@ -383,7 +397,7 @@ inline vec4 getAttribute(
               + index.y * vertexColorInfo.sizeInBytes;
       vec4f c1 = toRGBA(source1, vertexColorInfo);
       vec4f c2 = toRGBA(source2, vertexColorInfo);
-      color = lerp(c1, c2, uv.x);
+      color = lerp_r(c1, c2, uv.x);
     }
     else if (geom.type == dco::Geometry::Cylinder) {
       uint2 index = getCylinderIndex(geom.index, primID);
@@ -395,13 +409,17 @@ inline vec4 getAttribute(
               + index.y * vertexColorInfo.sizeInBytes;
       vec4f c1 = toRGBA(source1, vertexColorInfo);
       vec4f c2 = toRGBA(source2, vertexColorInfo);
-      color = lerp(c1, c2, uv.x);
+      color = lerp_r(c1, c2, uv.x);
     }
   } else if (primitiveColors.len > 0) {
     const auto *source
         = (const uint8_t *)primitiveColors.data
             + primID * primitiveColorInfo.sizeInBytes;
     color = toRGBA(source, primitiveColorInfo);
+  } else if (geometryColor.isSet) {
+    color = geometryColor.value;
+  } else if (instanceColor.isSet) {
+    color = instanceColor.value;
   }
 
   return color;
@@ -483,7 +501,7 @@ inline vec4 getColorPBM(const dco::Material &mat,
   const float metallic = getF(
       mat.asPhysicallyBased.metallic, samplers, attribs, primID);
   vec4f color = getRGBA(mat.asPhysicallyBased.baseColor, samplers, attribs, primID);
-  return lerp(color, vec4f(0.f, 0.f, 0.f, color.w), metallic);
+  return lerp_r(color, vec4f(0.f, 0.f, 0.f, color.w), metallic);
 }
 
 VSNRAY_FUNC
@@ -547,7 +565,7 @@ inline vec3 getPerturbedNormal(const dco::Material &mat,
     vec3 tbnN = s.xyz();
     if (length(tbnN) > 0.f) {
       vec3f objN = normalize(TBN * tbnN);
-      //pn = lerp(N, objN, 0.5f); // encode in outTransform!
+      //pn = lerp_r(N, objN, 0.5f); // encode in outTransform!
       pn = objN;
     }
   }
@@ -571,7 +589,7 @@ inline mat3 getNormalTransform(const dco::Instance &inst, const Ray &ray)
 
     float frac = time01 * (inst.len-1) - ID1;
 
-    return lerp(inst.normalXfms[ID1],
+    return lerp_r(inst.normalXfms[ID1],
                 inst.normalXfms[ID2],
                 frac);
   }
@@ -669,17 +687,18 @@ inline vec3 evalPhysicallyBasedMaterial(const dco::Material &mat,
   const float VdotH = fmaxf(EPS,dot(viewDir,H));
   const float LdotH = fmaxf(EPS,dot(lightDir,H));
 
-  // Diffuse:
-  vec3 diffuseColor = getRGBA(
+  // Get baseColor:
+  vec3 baseColor = getRGBA(
       mat.asPhysicallyBased.baseColor, samplers, attribs, primID).xyz();
 
+  // Metallic materials don't reflect diffusely:
+  vec3 diffuseColor = lerp_r(baseColor, vec3f(0.f), metallic);
+
   // Fresnel
-  vec3 f0 = lerp(vec3(pow2((1.f-ior)/(1.f+ior))), diffuseColor, metallic);
+  vec3 f0 = lerp_r(vec3(pow2((1.f-ior)/(1.f+ior))), baseColor, metallic);
   vec3 F = F_Schlick(VdotH, f0);
 
-  // Metallic materials don't reflect diffusely:
-  diffuseColor = lerp(diffuseColor, vec3f(0.f), metallic);
-
+  // Diffuse:
 //vec3 diffuseBRDF = diffuseColor * Fd_Lambert();
   vec3 diffuseBRDF = diffuseColor * Fd_Burley(NdotV, NdotL, LdotH, alpha);
 
@@ -765,9 +784,12 @@ inline LightSample sampleLight(const dco::Light &light, vec3f hitPos, Random &rn
   } else if (light.type == dco::Light::Directional) {
     ls = light.asDirectional.sample(hitPos, rnd);
     ls.intensity = light.asDirectional.intensity(hitPos);
+  } else if (light.type == dco::Light::Spot) {
+    ls = light.asSpot.sample(hitPos, rnd);
+    ls.intensity = light.asSpot.intensity(ls.dir);
   } else if (light.type == dco::Light::HDRI) {
     ls = light.asHDRI.sample(hitPos, rnd);
-    ls.intensity = light.asHDRI.intensity(result.dir);
+    ls.intensity = light.asHDRI.intensity(ls.dir);
   }
 
   result.intensity = ls.intensity;
@@ -837,14 +859,16 @@ inline hit_record<Ray, primitive<unsigned>> intersectSurfaces(
 
     float4 attribs[5];
     for (int i=0; i<5; ++i) {
-      attribs[i] = getAttribute(geom, (dco::Attribute)i, hr.prim_id, uv);
+      attribs[i] = getAttribute(geom, inst, (dco::Attribute)i, hr.prim_id, uv);
     }
 
     float opacity = getOpacity(mat, onDevice.samplers, attribs, hr.prim_id);
 
     float r = ss.random();
     if (r > opacity) {
-      ray.tmin = hr.t + 1e-4f;
+      const float3 hitPos = ray.ori + hr.t * ray.dir;
+      const float eps = epsilonFrom(hitPos, ray.dir, hr.t);
+      ray.tmin = hr.t + eps;
       hr = intersectSurfaces(ray, onDevice.TLSs[worldID]);
     } else {
       break;
@@ -862,6 +886,17 @@ inline dco::HitRecordVolume sampleFreeFlightDistanceAllVolumes(
   return intersectVolumes(ray, onDevice.TLSs[worldID]);
 }
 
+
+VSNRAY_FUNC
+inline dco::Light getLight(const dco::LightRef *lightRefs, unsigned lightID,
+    const DeviceObjectRegistry &onDevice)
+{
+  mat4 xfm = mat4::identity();
+  if (dco::validHandle(lightRefs[lightID].instID))
+    xfm = onDevice.instances[lightRefs[lightID].instID].xfms[0];
+  return xfmLight(onDevice.lights[lightRefs[lightID].lightID], xfm);
+}
+
 VSNRAY_FUNC
 inline HitRecLight intersectLights(ScreenSample &ss, const Ray &ray, unsigned worldID,
     const DeviceObjectRegistry &onDevice)
@@ -869,7 +904,7 @@ inline HitRecLight intersectLights(ScreenSample &ss, const Ray &ray, unsigned wo
   HitRecLight hr;
   dco::World world = onDevice.worlds[worldID];
   for (unsigned lightID=0; lightID<world.numLights; ++lightID) {
-    const dco::Light &light = onDevice.lights[world.allLights[lightID]];
+    const dco::Light &light = getLight(world.allLights, lightID, onDevice);
     if (light.type == dco::Light::Quad && light.visible) {
       auto hrl = intersect(ray, light.asQuad.geometry());
       if (hrl.hit && hrl.t < hr.t) {
@@ -927,10 +962,10 @@ vec3f heatMap(float t)
 #if 1
   return temperature_to_rgb(t);
 #else
-  if (t < .25f) return lerp(vec3f(0.f,1.f,0.f),vec3f(0.f,1.f,1.f),(t-0.f)/.25f);
-  if (t < .5f)  return lerp(vec3f(0.f,1.f,1.f),vec3f(0.f,0.f,1.f),(t-.25f)/.25f);
-  if (t < .75f) return lerp(vec3f(0.f,0.f,1.f),vec3f(1.f,1.f,1.f),(t-.5f)/.25f);
-  if (t < 1.f)  return lerp(vec3f(1.f,1.f,1.f),vec3f(1.f,0.f,0.f),(t-.75f)/.25f);
+  if (t < .25f) return lerp_r(vec3f(0.f,1.f,0.f),vec3f(0.f,1.f,1.f),(t-0.f)/.25f);
+  if (t < .5f)  return lerp_r(vec3f(0.f,1.f,1.f),vec3f(0.f,0.f,1.f),(t-.25f)/.25f);
+  if (t < .75f) return lerp_r(vec3f(0.f,0.f,1.f),vec3f(1.f,1.f,1.f),(t-.5f)/.25f);
+  if (t < 1.f)  return lerp_r(vec3f(1.f,1.f,1.f),vec3f(1.f,0.f,0.f),(t-.75f)/.25f);
   return vec3f(1.f,0.f,0.f);
 #endif
 }
@@ -951,7 +986,7 @@ inline void print(const aabb &box)
 VSNRAY_FUNC
 inline void print(const Ray &ray)
 {
-  printf("ray: [ori: (%f,%f,%f), dir: (%f,%f,%f), tmin: %f, %f, mask: %u]\n",
+  printf("ray: [ori: (%f,%f,%f), dir: (%f,%f,%f), tmin: %f, tmax: %f, mask: %u]\n",
       ray.ori.x, ray.ori.y, ray.ori.z, ray.dir.x, ray.dir.y, ray.dir.z,
       ray.tmin, ray.tmax, ray.intersectionMask);
 }

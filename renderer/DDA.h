@@ -6,12 +6,12 @@ namespace visionaray {
 
   typedef vec3i GridIterationState;
   
-  template <typename Func>
+  template <typename Ray, typename Func>
   VSNRAY_FUNC
-  inline void dda3(basic_ray<float> ray,
-                   const vec3i     &gridDims,
-                   const box3f     &modelBounds,
-                   const Func      &func)
+  inline void dda3(Ray          ray,
+                   const vec3i &gridDims,
+                   const box3f &modelBounds,
+                   const Func  &func)
   {
     // move ray so tmin becomes 0
     const float ray_tmin = ray.tmin;
@@ -19,20 +19,28 @@ namespace visionaray {
     ray.tmin = 0.f;
     ray.tmax -= ray_tmin;
 
-    const vec3 rcp_dir(ray.dir.x != 0.f ? 1.f / ray.dir.x : 0.f,
-        ray.dir.y != 0.f ? 1.f / ray.dir.y : 0.f,
-        ray.dir.z != 0.f ? 1.f / ray.dir.z : 0.f);
+    const vec3 rcp_dir = 1.f / ray.dir;
 
     const vec3f lo = (modelBounds.min - ray.ori) * rcp_dir;
     const vec3f hi = (modelBounds.max - ray.ori) * rcp_dir;
 
-    const vec3f tnear = min(lo,hi);
-    const vec3f tfar  = max(lo,hi);
+    vec3f tnear = min(lo,hi);
+    const vec3f tfar = max(lo,hi);
+
+    if (ray.dir.x == 0.f) {
+      tnear.x = FLT_MAX;
+    }
+    if (ray.dir.y == 0.f) {
+      tnear.y = FLT_MAX;
+    }
+    if (ray.dir.z == 0.f) {
+      tnear.z = FLT_MAX;
+    }
 
     vec3i cellID = projectOnGrid(ray.ori,gridDims,modelBounds);
 
     // Distance in world space to get from cell to cell
-    const vec3f dist((tfar-tnear)/vec3f(gridDims));
+    const vec3f dist(max(vec3f(0.f),(tfar-tnear)/vec3f(gridDims)));
 
     // Cell increment
     const vec3i step = {
